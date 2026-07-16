@@ -2,7 +2,12 @@
 // 외부 fetch는 호스트 allowlist + https + 타임아웃으로 제한.
 // (리다이렉트 홉 재검증 등 전체 방어는 P6에서 강화.)
 
-const ALLOW_HOSTS = new Set(["celestrak.org", "db.satnogs.org"]);
+const ALLOW_HOSTS = new Set([
+  "celestrak.org",
+  "db.satnogs.org",
+  "api.adsb.lol",
+  "api.airplanes.live",
+]);
 
 export async function safeFetch(url: string, timeoutMs = 8000): Promise<Response> {
   const u = new URL(url);

@@ -2,24 +2,28 @@
 
 import { useStore } from "@/lib/store";
 
-type Key = "orbits" | "groundTracks" | "satellites" | "terrain";
-const ITEMS: { k: Key; label: string; hint: string }[] = [
-  { k: "orbits", label: "궤도 링", hint: "SGP4" },
-  { k: "groundTracks", label: "지상궤적", hint: "TRACK" },
-  { k: "satellites", label: "위성", hint: "4" },
-  { k: "terrain", label: "3D 지형", hint: "DEM" },
-];
+type Key = "orbits" | "groundTracks" | "satellites" | "aircraft" | "terrain";
 
 export default function LayerRail() {
   const layers = useStore((s) => s.layers);
   const toggle = useStore((s) => s.toggleLayer);
+  const aircraftCount = useStore((s) => s.aircraftCount);
+  const satCount = useStore((s) => s.sats.length);
+
+  const items: { k: Key; label: string; hint: string }[] = [
+    { k: "orbits", label: "궤도 링", hint: "SGP4" },
+    { k: "groundTracks", label: "지상궤적", hint: "TRACK" },
+    { k: "satellites", label: "위성", hint: String(satCount) },
+    { k: "aircraft", label: "항공기", hint: aircraftCount ? aircraftCount.toLocaleString() : "…" },
+    { k: "terrain", label: "3D 지형", hint: "DEM" },
+  ];
 
   return (
     <div className="glass" style={S.rail}>
       <div style={S.head}>
         <span className="eyebrow">Layers</span>
       </div>
-      {ITEMS.map((it) => {
+      {items.map((it) => {
         const on = layers[it.k];
         return (
           <div key={it.k} style={{ ...S.row, ...(on ? S.rowOn : {}) }} onClick={() => toggle(it.k)}>
@@ -41,6 +45,10 @@ export default function LayerRail() {
         <span style={S.lgi}>
           <i style={{ ...S.swz, background: "var(--amber)" }} />
           추적(ISS)
+        </span>
+        <span style={S.lgi}>
+          <i style={{ ...S.swz, background: "#d2e6ff" }} />
+          항공기
         </span>
       </div>
     </div>
