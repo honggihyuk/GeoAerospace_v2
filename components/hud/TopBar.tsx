@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useStore } from "@/lib/store";
+import { runAgent } from "@/lib/agent";
 
 function utcClock() {
   const d = new Date();
@@ -11,8 +12,12 @@ function utcClock() {
 
 export default function TopBar() {
   const [clock, setClock] = useState("--:--:-- UTC");
+  const [cmd, setCmd] = useState("");
+  const busy = useStore((s) => s.agentBusy);
   const tleSource = useStore((s) => s.tleSource);
-  const live = tleSource !== "demo";
+  const tleState = tleSource === "loading" ? "loading" : tleSource === "demo" ? "demo" : "live";
+  const tleColor = tleState === "live" ? "var(--ok)" : tleState === "loading" ? "var(--cyan)" : "var(--warn)";
+  const tleText = tleState === "live" ? `LIVE · ${tleSource}` : tleState === "loading" ? "LOADING…" : "DEMO";
   useEffect(() => {
     setClock(utcClock());
     const id = setInterval(() => setClock(utcClock()), 1000);
@@ -33,7 +38,18 @@ export default function TopBar() {
           <circle cx="11" cy="11" r="7" />
           <path d="m21 21-4-4" />
         </svg>
-        <input style={S.input} placeholder="위성·항공·궤도를 자연어로 명령…  (에이전트 연동은 P4)" />
+        <input
+          style={S.input}
+          value={cmd}
+          onChange={(e) => setCmd(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && cmd.trim() && !busy) {
+              runAgent(cmd.trim());
+              setCmd("");
+            }
+          }}
+          placeholder="위성·항공·궤도를 자연어로 명령…  예) ISS를 추적해줘"
+        />
         <kbd style={S.kbd}>⌘K</kbd>
       </label>
 
@@ -44,8 +60,8 @@ export default function TopBar() {
         </span>
         <span style={S.chip}>
           <span style={{ color: "var(--faint)" }}>TLE</span>
-          <span className="mono" style={{ color: live ? "var(--ok)" : "var(--warn)" }}>
-            {live ? `LIVE · ${tleSource}` : "DEMO"}
+          <span className="mono" style={{ color: tleColor }}>
+            {tleText}
           </span>
         </span>
         <span className="mono" style={S.clock}>

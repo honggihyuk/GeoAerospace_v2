@@ -9,6 +9,8 @@ import { computeOrbit, currentPosition, type OrbitData } from "@/lib/orbit";
 import { useStore } from "@/lib/store";
 import { loadLiveTles } from "@/lib/tleClient";
 import { loadAircraft, deadReckon, makePlaneIcon, AC_COLOR, type AircraftSnapshot } from "@/lib/aircraft";
+import { createOrbitalLayer, type SatView } from "@/lib/three/orbitalLayer";
+import { mapBus } from "@/lib/mapBus";
 
 // --- 다크 글로브 스타일 (오픈·토큰프리: CARTO dark + AWS Terrarium DEM) ---
 const STYLE: StyleSpecification = {
@@ -45,6 +47,7 @@ export default function MapCanvas() {
   const mapRef = useRef<maplibregl.Map | null>(null);
   const overlayRef = useRef<MapboxOverlay | null>(null);
   const acRef = useRef<AircraftSnapshot>({ data: [], source: "—", fetchedAt: Date.now() });
+  const satViewRef = useRef<SatView[]>([]);
   const iconRef = useRef<{ url: string; width: number; height: number; anchorX: number; anchorY: number; mask: boolean } | null>(null);
   const select = useStore((s) => s.select);
   const sats = useStore((s) => s.sats);
@@ -100,6 +103,7 @@ export default function MapCanvas() {
       maxPitch: 85,
     });
     mapRef.current = map;
+    mapBus.set(map); // 에이전트가 지도를 조작할 수 있도록 연결 (P4)
 
     const overlay = new MapboxOverlay({ interleaved: true, layers: [] });
     overlayRef.current = overlay;
@@ -121,9 +125,16 @@ export default function MapCanvas() {
       } catch {
         /* noop */
       }
+      // Three.js 3D 위성·센서 콘 custom layer (§4.6-A). globe 미지원 시 render()가 자체 skip.
+      try {
+        map.addLayer(createOrbitalLayer(() => (useStore.getState().layers.satellites ? satViewRef.current : [])));
+      } catch {
+        /* noop */
+      }
     });
 
     return () => {
+      mapBus.set(null);
       map.remove();
       mapRef.current = null;
       overlayRef.current = null;
@@ -148,6 +159,9 @@ export default function MapCanvas() {
           return p ? { pos: p, color: o.def.color, norad: o.def.noradId, sel: o.def.noradId === sel } : null;
         })
         .filter(Boolean) as { pos: [number, number, number]; color: [number, number, number]; norad: number; sel: boolean }[];
+
+      // Three.js 레이어용 위성 뷰 갱신 (§4.6-A)
+      satViewRef.current = satData.map((s) => ({ lng: s.pos[0], lat: s.pos[1], alt: s.pos[2], color: s.color, sel: s.sel }));
 
       const acData = st.layers.aircraft && iconRef.current ? deadReckon(acRef.current, Date.now()) : [];
 

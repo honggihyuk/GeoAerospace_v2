@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import TopBar from "@/components/hud/TopBar";
 import TrackCard from "@/components/hud/TrackCard";
 import LayerRail from "@/components/hud/LayerRail";
+import ChatDrawer from "@/components/hud/ChatDrawer";
 
 const MapCanvas = dynamic(() => import("@/components/MapCanvas"), {
   ssr: false,
@@ -33,6 +34,7 @@ export default function Page() {
       <TopBar />
       <LayerRail />
       <TrackCard />
+      <ChatDrawer />
     </main>
   );
 }

@@ -26,7 +26,7 @@ function parseCelestrakTle(text: string): { name: string; tle1: string; tle2: st
 }
 
 async function fromCelestrak(id: number) {
-  const r = await safeFetch(`https://celestrak.org/NORAD/elements/gp.php?CATNR=${id}&FORMAT=tle`);
+  const r = await safeFetch(`https://celestrak.org/NORAD/elements/gp.php?CATNR=${id}&FORMAT=tle`, 6000);
   if (!r.ok) throw new Error(`celestrak ${r.status}`);
   const p = parseCelestrakTle(await r.text());
   if (!p) throw new Error("celestrak: no GP data");
@@ -44,29 +44,27 @@ async function fromSatnogs(id: number) {
   return { name, tle1: t.tle1, tle2: t.tle2, source: "satnogs" };
 }
 
+function toDef(id: number, e: { name: string; tle1: string; tle2: string }): SatDef {
+  const m = meta(id);
+  return { noradId: id, name: e.name || m.name, tle1: e.tle1, tle2: e.tle2, color: m.color, kind: m.kind };
+}
+
 async function fetchOne(id: number): Promise<SatDef | null> {
   const cached = cache.get(id);
-  if (cached && Date.now() - cached.ts < TTL_MS) {
-    const m = meta(id);
-    return { noradId: id, name: cached.name || m.name, tle1: cached.tle1, tle2: cached.tle2, color: m.color, kind: m.kind };
+  if (cached && Date.now() - cached.ts < TTL_MS) return toDef(id, cached);
+
+  // CelesTrak / SatNOGS 병렬 레이스 — 먼저 성공하는 소스가 승리 (§4.8-B 회복탄력).
+  // (CelesTrak 차단 네트워크에서도 SatNOGS가 즉시 응답 → 데모 지연 제거)
+  try {
+    const got = await Promise.any([fromCelestrak(id), fromSatnogs(id)]);
+    cache.set(id, { ...got, ts: Date.now() });
+    return toDef(id, got);
+  } catch {
+    /* 두 소스 모두 실패 */
   }
-  // CelesTrak → SatNOGS 폴백
-  for (const src of [fromCelestrak, fromSatnogs]) {
-    try {
-      const got = await src(id);
-      cache.set(id, { ...got, ts: Date.now() });
-      const m = meta(id);
-      return { noradId: id, name: got.name || m.name, tle1: got.tle1, tle2: got.tle2, color: m.color, kind: m.kind };
-    } catch {
-      /* 다음 소스 시도 */
-    }
-  }
-  // 스테일 캐시 유지 (있으면)
-  if (cached) {
-    const m = meta(id);
-    return { noradId: id, name: cached.name || m.name, tle1: cached.tle1, tle2: cached.tle2, color: m.color, kind: m.kind };
-  }
-  return null;
+  if (cached) return toDef(id, cached); // 스테일 캐시
+  const demo = SATELLITES.find((s) => s.noradId === id); // 최후: 데모 TLE로라도 표시
+  return demo ?? null;
 }
 
 /** 여러 위성 TLE를 회복탄력적으로 수집 (Promise.allSettled). */

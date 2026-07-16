@@ -7,6 +7,7 @@ const ALLOW_HOSTS = new Set([
   "db.satnogs.org",
   "api.adsb.lol",
   "api.airplanes.live",
+  "nominatim.openstreetmap.org",
 ]);
 
 export async function safeFetch(url: string, timeoutMs = 8000): Promise<Response> {
@@ -20,7 +21,7 @@ export async function safeFetch(url: string, timeoutMs = 8000): Promise<Response
     return await fetch(url, {
       signal: ctrl.signal,
       redirect: "error", // public→private 리다이렉트 우회 차단
-      headers: { accept: "text/plain, application/json" },
+      headers: { accept: "text/plain, application/json", "user-agent": "GeoAerospace/0.1 (dev)" },
     });
   } finally {
     clearTimeout(timer);
