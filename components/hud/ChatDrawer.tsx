@@ -47,8 +47,8 @@ export default function ChatDrawer() {
       <div ref={threadRef} style={S.thread}>
         {chat.length === 0 && (
           <div style={S.hint}>
-            <div style={{ color: "var(--muted)", marginBottom: 8 }}>자연어로 지도를 제어하세요.</div>
-            {["서울로 이동해줘", "ISS를 추적해줘", "항공기 레이어를 꺼줘", "도쿄 상공을 보여줘"].map((ex) => (
+            <div style={{ color: "var(--muted)", marginBottom: 8 }}>지도를 제어하거나 궤도역학을 물어보세요.</div>
+            {["도쿄 상공을 보여줘", "ISS를 추적해줘", "항공기 레이어를 꺼줘", "TLE가 뭐야?", "태양동기궤도가 뭐야?"].map((ex) => (
               <button key={ex} style={S.chipBtn} onClick={() => runAgent(ex)}>
                 {ex}
               </button>
