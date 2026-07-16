@@ -61,22 +61,57 @@ export function currentPosition(satrec: satellite.SatRec, date = new Date()): Lo
   return eciToLonLatAlt(satrec, date);
 }
 
-/** 텔레메트리 요약 (HUD 카드용). */
+/** 태양 방향 단위 벡터(ECI). 저정밀 표준식(~0.01°). */
+export function sunEci(date: Date): { x: number; y: number; z: number } {
+  const jd = date.getTime() / 86400000 + 2440587.5;
+  const n = jd - 2451545.0;
+  const L = ((280.46 + 0.9856474 * n) % 360) * (Math.PI / 180);
+  const g = ((357.528 + 0.9856003 * n) % 360) * (Math.PI / 180);
+  const lam = L + (1.915 * Math.sin(g) + 0.02 * Math.sin(2 * g)) * (Math.PI / 180);
+  const eps = (23.439 - 0.0000004 * n) * (Math.PI / 180);
+  return { x: Math.cos(lam), y: Math.cos(eps) * Math.sin(lam), z: Math.sin(eps) * Math.sin(lam) };
+}
+
+/** 위성이 지구 그림자(원통 umbra 근사) 안인지 = 식(eclipse). posEci: km */
+export function isEclipsed(pos: { x: number; y: number; z: number }, date: Date): boolean {
+  const s = sunEci(date);
+  const d = pos.x * s.x + pos.y * s.y + pos.z * s.z; // 태양 방향 투영
+  if (d >= 0) return false; // 태양 쪽 → 항상 일조
+  const px = pos.x - d * s.x;
+  const py = pos.y - d * s.y;
+  const pz = pos.z - d * s.z;
+  return Math.sqrt(px * px + py * py + pz * pz) < 6371; // 지구 반경 내 → 그림자
+}
+
+/** TLE epoch(ms). satellite.js satrec.jdsatepoch(+F) 사용. */
+export function tleEpochMs(satrec: satellite.SatRec): number {
+  const jd = satrec.jdsatepoch + ((satrec as unknown as { jdsatepochF?: number }).jdsatepochF ?? 0);
+  return (jd - 2440587.5) * 86400000;
+}
+
+/** 텔레메트리 요약 + TLE 나이/추정오차 + 일조/식 (HUD 카드용). */
 export function telemetry(o: OrbitData, date = new Date()) {
   const pv = satellite.propagate(o.satrec, date);
   let velocity = 0;
   let altKm = 0;
-  if (pv && pv.position && typeof pv.position !== "boolean" && pv.velocity && typeof pv.velocity !== "boolean") {
-    const v = pv.velocity;
-    velocity = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z); // km/s
+  let illuminated = true;
+  if (pv && pv.position && typeof pv.position !== "boolean") {
     const gmst = satellite.gstime(date);
     altKm = satellite.eciToGeodetic(pv.position, gmst).height;
+    illuminated = !isEclipsed(pv.position, date);
+    if (pv.velocity && typeof pv.velocity !== "boolean") {
+      const v = pv.velocity;
+      velocity = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+    }
   }
-  const inclDeg = (o.satrec.inclo * 180) / Math.PI;
+  const ageDays = (date.getTime() - tleEpochMs(o.satrec)) / 86400000;
   return {
     altKm: Math.round(altKm),
     velocity: velocity.toFixed(2),
-    inclDeg: inclDeg.toFixed(1),
+    inclDeg: ((o.satrec.inclo * 180) / Math.PI).toFixed(1),
     periodMin: o.periodMin.toFixed(1),
+    ageDays: Math.abs(ageDays),
+    estErrKm: Math.max(1, Math.abs(ageDays) * 2), // TLE ~1~3km/일 → 2km/일 추정
+    illuminated,
   };
 }

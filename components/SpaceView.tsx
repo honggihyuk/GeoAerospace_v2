@@ -7,7 +7,8 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import * as satellite from "satellite.js";
 import { useStore } from "@/lib/store";
-import { computeOrbit } from "@/lib/orbit";
+import { computeOrbit, sunEci, isEclipsed } from "@/lib/orbit";
+import { simClock } from "@/lib/simClock";
 
 const KM = 1 / 1000; // km → scene unit (1 unit = 1000 km)
 const R_EARTH = 6371 * KM;
@@ -47,8 +48,8 @@ export default function SpaceView() {
     controls.rotateSpeed = 0.5;
 
     // 조명
-    scene.add(new THREE.AmbientLight(0x8fb4e8, 0.7));
-    const sun = new THREE.DirectionalLight(0xfff2d8, 1.6);
+    scene.add(new THREE.AmbientLight(0x8fb4e8, 0.4)); // 낮춰 주야 대비 강조
+    const sun = new THREE.DirectionalLight(0xfff2d8, 1.9);
     sun.position.set(30, 10, 20);
     scene.add(sun);
 
@@ -162,9 +163,14 @@ export default function SpaceView() {
 
     // 애니메이션
     let raf = 0;
+    const sunV = new THREE.Vector3();
     const loop = () => {
-      const now = new Date();
+      const now = simClock.nowDate(); // 가상 시계(배속/스크럽/일시정지)
       earth.rotation.y = satellite.gstime(now); // GMST 자전 (관성계 대비)
+      // 태양 방향 → 조명(실시간 주야 터미네이터)
+      const se = sunEci(now);
+      sunV.set(se.x, se.z, -se.y).normalize();
+      sun.position.copy(sunV).multiplyScalar(100);
       const sel = useStore.getState().selectedNorad;
       for (const s of satObjs) {
         const pv = satellite.propagate(s.satrec, now);
@@ -173,6 +179,10 @@ export default function SpaceView() {
           s.mesh.position.copy(p);
           const isSel = s.norad === sel;
           s.mesh.scale.setScalar(isSel ? 1.8 : 1);
+          // 식(eclipse) → 지구 그림자 안이면 위성 어둡게
+          const mat = s.mesh.material as THREE.MeshBasicMaterial;
+          mat.color.setHex(s.color);
+          if (isEclipsed(pv.position, now)) mat.color.multiplyScalar(0.28);
           // 센서 콘: 위성→지구중심 정렬, 높이=고도
           s.cone.visible = isSel;
           if (isSel) {

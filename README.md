@@ -15,6 +15,10 @@
 - deck.gl 발광 궤도 렌더 (`PathLayer`/`ScatterplotLayer`, MapboxOverlay interleaved)
 - **Three.js custom layer**(§4.6-A) — MapLibre v5 globe 위 **3D 위성 모델**(본체·태양전지판·안테나) + 추적 대상 **센서 콘**(nadir). `getMatrixForModel` + `defaultProjectionData.mainMatrix`로 객체별 렌더
 - **실축척 3D 우주 뷰(P2.7, §4.6-B)** — 뷰 전환("2D 글로브"/"3D 우주 뷰"). 전용 Three.js 씬: **관성계(ECI) 실축척 궤도 타원**(satellite.js ECI 좌표 직접 사용) + 자전하는 지구(GMST) + 대기 프레넬 셰이더 + 별필드 + 센서 콘 + OrbitControls(자유 시점). LEO 궤도가 지구에 밀착한 진짜 축척
+- **고도화 — 정확도·실시간(구상 §D)**:
+  - **TLE 나이/추정오차 배지** — 위성 epoch로 실제 나이 계산(<2d 녹/2~7d 황/>7d 적) + ±km 추정오차. 캐시 4h→2h
+  - **실시간 주야 터미네이터 + 식(eclipse)** — 태양 ECI 위치로 3D 지구 조명(터미네이터), 위성이 지구 그림자에 들면 어둡게. TrackCard 일조/식 표시
+  - **타임 컨트롤러** — 재생/일시정지/**배속(1×·60×·3600×)**/±1h 스크럽. 가상 시계(`simClock`)가 위성 전파·시각을 구동
 - **자연어 지도 제어(P4)** — 로컬 **Qwen3-8B(Ollama)** 백본. 명령 바/챗 → 도구 실행(`fly_to_place`·`select_satellite`·`toggle_layer`). **결정론적 의도 해석 그라운딩 레이어**(§4.5)로 8B 도구선택 변동성 보정 + **지오코딩**(도시 테이블 + Nominatim 폴백)으로 좌표 환각 제거
 - **궤도역학 RAG Q&A(P3)** — 지도 명령이 아닌 질문은 `/api/rag`로. **bge-m3(Ollama) 임베딩 + 하이브리드 검색**(코사인 + 어휘 부스트) top-k → **Qwen3 근거 기반 종합**. 지식 코퍼스 14청크(TLE·SGP4·궤도요소·좌표계·데이터소스…), 답변에 근거 출처 표시
 - **서버 정확도 CI** — Vallado sgp4-ver 골든 벡터(catalog 00005, <10m/1mm·s) + ISS 불변식 (`npm test`)

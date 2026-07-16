@@ -11,6 +11,7 @@ import { loadLiveTles } from "@/lib/tleClient";
 import { loadAircraft, deadReckon, makePlaneIcon, AC_COLOR, type AircraftSnapshot } from "@/lib/aircraft";
 import { createOrbitalLayer, type SatView } from "@/lib/three/orbitalLayer";
 import { mapBus } from "@/lib/mapBus";
+import { simClock } from "@/lib/simClock";
 
 // --- 다크 글로브 스타일 (오픈·토큰프리: CARTO dark + AWS Terrarium DEM) ---
 const STYLE: StyleSpecification = {
@@ -148,7 +149,7 @@ export default function MapCanvas() {
 
     const build = () => {
       const st = useStore.getState();
-      const now = new Date();
+      const now = simClock.nowDate(); // 위성 전파는 가상 시계 기준(배속/스크럽)
       const sel = st.selectedNorad;
 
       const orbitData = orbits.map((o) => ({ path: o.ring, color: o.def.color, sel: o.def.noradId === sel }));

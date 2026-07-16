@@ -3,9 +3,10 @@
 import { useEffect, useState } from "react";
 import { useStore } from "@/lib/store";
 import { runAgent } from "@/lib/agent";
+import { simClock } from "@/lib/simClock";
 
 function utcClock() {
-  const d = new Date();
+  const d = simClock.nowDate(); // 가상 시계 반영 (배속/스크럽)
   const p = (n: number) => String(n).padStart(2, "0");
   return `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} UTC`;
 }

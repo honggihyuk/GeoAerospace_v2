@@ -2,7 +2,7 @@
 import { safeFetch, validNoradId } from "./safeFetch";
 import { SATELLITES, type SatDef } from "@/lib/tle";
 
-const TTL_MS = 4 * 60 * 60 * 1000; // 4시간 (설계서 §4.8-B)
+const TTL_MS = 2 * 60 * 60 * 1000; // 2시간 — 활성 LEO 신선도 위해 단축 (고도화 A1)
 
 type CacheEntry = { tle1: string; tle2: string; name: string; source: string; ts: number };
 const cache = new Map<number, CacheEntry>();

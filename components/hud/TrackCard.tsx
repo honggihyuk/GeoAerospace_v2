@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { computeOrbit, telemetry } from "@/lib/orbit";
 import { useStore } from "@/lib/store";
+import { simClock } from "@/lib/simClock";
 
 export default function TrackCard() {
   const selectedNorad = useStore((s) => s.selectedNorad);
@@ -16,7 +17,7 @@ export default function TrackCard() {
       setTel(null);
       return;
     }
-    const tick = () => setTel(telemetry(orbit));
+    const tick = () => setTel(telemetry(orbit, simClock.nowDate()));
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
@@ -45,9 +46,28 @@ export default function TrackCard() {
         <Cell l="경사각" v={tel.inclDeg} u="°" />
         <Cell l="주기" v={tel.periodMin} u="min" />
       </div>
+
+      <div style={S.statusRow}>
+        <span>
+          <span style={S.sl}>TLE</span>{" "}
+          <b className="mono" style={{ color: ageColor(tel.ageDays) }}>
+            {tel.ageDays.toFixed(1)}d
+          </b>
+          <span style={S.sub2}> · ±{tel.estErrKm.toFixed(0)}km</span>
+        </span>
+        <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <span style={{ ...S.dot, background: tel.illuminated ? "var(--amber)" : "var(--faint)", boxShadow: tel.illuminated ? "0 0 6px var(--amber)" : "none" }} />
+          <b style={{ color: tel.illuminated ? "var(--amber)" : "var(--muted)", fontSize: 11 }}>{tel.illuminated ? "일조" : "식(그림자)"}</b>
+        </span>
+      </div>
+
       <div style={S.hint}>▸ 지도의 위성을 클릭하면 추적 대상 전환</div>
     </div>
   );
+}
+
+function ageColor(days: number): string {
+  return days < 2 ? "var(--ok)" : days < 7 ? "var(--warn)" : "var(--crit)";
 }
 
 function Cell({ l, v, u, ok }: { l: string; v: string; u: string; ok?: boolean }) {
@@ -71,5 +91,9 @@ const S: Record<string, React.CSSProperties> = {
   l: { fontSize: 9.5, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--faint)" },
   v: { fontSize: 16, marginTop: 1 },
   u: { fontSize: 10, color: "var(--muted)", textDecoration: "none", marginLeft: 2 },
-  hint: { marginTop: 12, paddingTop: 11, borderTop: "1px solid var(--grid)", fontSize: 10.5, color: "var(--faint)" },
+  hint: { marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--grid)", fontSize: 10.5, color: "var(--faint)" },
+  statusRow: { marginTop: 12, paddingTop: 11, borderTop: "1px solid var(--grid)", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11.5, color: "var(--muted)" },
+  sl: { fontSize: 9.5, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--faint)" },
+  sub2: { fontSize: 10.5, color: "var(--faint)" },
+  dot: { width: 7, height: 7, borderRadius: "50%", display: "inline-block" },
 };

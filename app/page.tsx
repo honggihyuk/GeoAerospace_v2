@@ -7,6 +7,7 @@ import TrackCard from "@/components/hud/TrackCard";
 import LayerRail from "@/components/hud/LayerRail";
 import ChatDrawer from "@/components/hud/ChatDrawer";
 import ViewSwitcher from "@/components/hud/ViewSwitcher";
+import TimeController from "@/components/hud/TimeController";
 
 const boot = (label: string) => (
   <div
@@ -38,6 +39,7 @@ export default function Page() {
       <ViewSwitcher />
       <LayerRail />
       <TrackCard />
+      <TimeController />
       <ChatDrawer />
     </main>
   );
