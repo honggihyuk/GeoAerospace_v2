@@ -11,7 +11,11 @@ type Layers = {
 
 export type ChatMsg = { role: "user" | "assistant"; content: string; tools?: string[] };
 
+export type ViewMode = "globe" | "space";
+
 type AppState = {
+  view: ViewMode;
+  setView: (v: ViewMode) => void;
   selectedNorad: number | null;
   layers: Layers;
   sats: SatDef[]; // 로드된 TLE (기본: 데모 세트, 마운트 후 실시간 교체)
@@ -29,6 +33,8 @@ type AppState = {
 };
 
 export const useStore = create<AppState>((set) => ({
+  view: "globe",
+  setView: (v) => set({ view: v }),
   selectedNorad: 25544, // ISS 기본 추적
   layers: { orbits: true, groundTracks: true, satellites: true, aircraft: true, terrain: true },
   sats: SATELLITES,
