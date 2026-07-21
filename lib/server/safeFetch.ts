@@ -5,12 +5,33 @@
 const ALLOW_HOSTS = new Set([
   "celestrak.org",
   "db.satnogs.org",
+  "network.satnogs.org", // SatNOGS 지상국 네트워크 (고도화 B4)
   "api.adsb.lol",
   "api.airplanes.live",
   "nominatim.openstreetmap.org",
+  "gibs.earthdata.nasa.gov", // NASA GIBS 위성영상 (고도화 B1)
+  "www.space-track.org", // 18 SDS 권위 카탈로그 (고도화 A1)
+  "nasa-public-data.s3.amazonaws.com", // NASA ISS 정밀 ephemeris OEM (고도화 A2)
+  "firms.modaps.eosdis.nasa.gov", // NASA FIRMS 활성 화재 (제안서 §4.7 / P5.5)
+  "eonet.gsfc.nasa.gov", // NASA EONET 화산 이벤트 (P5.5)
+  "apis.data.go.kr", // 공공데이터포털 — 기상청 GK2A 위성자료 (제안서_GK2A)
 ]);
 
-export async function safeFetch(url: string, timeoutMs = 8000): Promise<Response> {
+type FetchOpts = {
+  timeoutMs?: number;
+  accept?: string;
+  method?: string;
+  body?: string;
+  /** 추가 요청 헤더. 인증 쿠키 등. */
+  headers?: Record<string, string>;
+  /** 기본은 "error"(리다이렉트 우회 차단). 로그인처럼 Set-Cookie를 직접 읽어야 할 때만 "manual". */
+  redirect?: RequestRedirect;
+};
+
+export async function safeFetch(url: string, opts: number | FetchOpts = {}): Promise<Response> {
+  const o: FetchOpts = typeof opts === "number" ? { timeoutMs: opts } : opts;
+  const { timeoutMs = 8000, accept = "text/plain, application/json", method = "GET", body, headers, redirect = "error" } = o;
+
   const u = new URL(url);
   if (u.protocol !== "https:") throw new Error(`SSRF: protocol not allowed (${u.protocol})`);
   if (!ALLOW_HOSTS.has(u.hostname)) throw new Error(`SSRF: host not allowed (${u.hostname})`);
@@ -19,9 +40,11 @@ export async function safeFetch(url: string, timeoutMs = 8000): Promise<Response
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     return await fetch(url, {
+      method,
+      body,
       signal: ctrl.signal,
-      redirect: "error", // public→private 리다이렉트 우회 차단
-      headers: { accept: "text/plain, application/json", "user-agent": "GeoAerospace/0.1 (dev)" },
+      redirect, // public→private 리다이렉트 우회 차단
+      headers: { accept, "user-agent": "GeoAerospace/0.1 (dev)", ...headers },
     });
   } finally {
     clearTimeout(timer);

@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>궤도 추정 원리 — 2D Globe vs 3D 관성계</title>
+<style>
+  :root{
+    --bg:#05070f; --ink:#e9f0fb; --muted:#8fa6c2; --faint:#5b6f8c;
+    --cyan:#39d6ff; --amber:#ffb24d; --line:rgba(120,160,210,.16); --glass:rgba(18,28,48,.55);
+    --mono:ui-monospace,"SF Mono","Cascadia Mono","Roboto Mono",Menlo,Consolas,monospace;
+    --sans:"Pretendard",system-ui,-apple-system,"Segoe UI","Malgun Gothic",sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden;-webkit-font-smoothing:antialiased}
+  #stars{position:fixed;inset:0;z-index:0}
+  .glow-bg{position:fixed;inset:0;z-index:0;pointer-events:none;
+    background:radial-gradient(60% 45% at 80% 14%,rgba(57,214,255,.10),transparent 60%),
+      radial-gradient(55% 50% at 16% 90%,rgba(255,178,77,.07),transparent 60%),
+      radial-gradient(120% 80% at 50% 120%,rgba(10,20,45,.9),transparent 55%);}
+  #deck{position:relative;z-index:2;height:100vh;width:100vw}
+  .slide{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;
+    padding:5.5vh 7vw;opacity:0;visibility:hidden;transform:translateY(22px) scale(.99);
+    transition:opacity .6s ease,transform .6s cubic-bezier(.2,.7,.2,1),visibility .6s}
+  .slide.active{opacity:1;visibility:visible;transform:none}
+  .kicker{font-family:var(--mono);font-size:.78rem;letter-spacing:.26em;text-transform:uppercase;color:var(--cyan);
+    margin-bottom:.7rem;display:flex;align-items:center;gap:.7rem}
+  .kicker::before{content:"";width:26px;height:1px;background:linear-gradient(90deg,var(--cyan),transparent)}
+  h2{font-size:clamp(1.6rem,3.4vw,2.9rem);font-weight:780;line-height:1.08;letter-spacing:-.01em}
+  .accent{color:var(--cyan)} .amber{color:var(--amber)}
+  .sub{color:var(--muted);font-size:clamp(.95rem,1.4vw,1.12rem);line-height:1.55}
+  .mono{font-family:var(--mono)}
+  .card{background:var(--glass);border:1px solid var(--line);border-radius:14px;padding:1rem 1.15rem;position:relative;overflow:hidden}
+  .card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--cyan);opacity:.7}
+  .card.amberc::before{background:var(--amber)}
+  .card .num{font-family:var(--mono);color:var(--cyan);font-size:.72rem;letter-spacing:.15em}
+  .card.amberc .num{color:var(--amber)}
+  .card h3{margin:.3rem 0 .35rem;font-size:1.05rem}
+  .card p{color:var(--muted);font-size:.92rem;line-height:1.5}
+  .pill{display:inline-block;font-family:var(--mono);font-size:.68rem;letter-spacing:.1em;padding:.24rem .55rem;
+    border-radius:999px;border:1px solid var(--line);color:var(--muted);margin:.18rem .28rem .18rem 0}
+  .pill.c{color:var(--cyan);border-color:rgba(57,214,255,.3)}
+  .pill.a{color:var(--amber);border-color:rgba(255,178,77,.3)}
+
+  /* pipeline */
+  .pipe{display:flex;align-items:stretch;gap:.5rem;width:100%;margin-top:.3rem}
+  .stage{flex:1;background:var(--glass);border:1px solid var(--line);border-radius:14px;padding:1rem 1.05rem;position:relative}
+  .stage .tag{font-family:var(--mono);font-size:.68rem;letter-spacing:.14em;color:var(--faint)}
+  .stage h3{font-size:1.12rem;margin:.28rem 0 .3rem}
+  .stage p{color:var(--muted);font-size:.88rem;line-height:1.48}
+  .stage.eng{border-color:rgba(57,214,255,.4);box-shadow:0 0 26px rgba(57,214,255,.10)}
+  .stage.eng h3{color:var(--cyan)}
+  .arrow{align-self:center;color:var(--cyan);font-size:1.5rem;opacity:.7;flex:none}
+  .branch{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:1rem}
+  .bcard{background:var(--glass);border:1px solid var(--line);border-radius:14px;padding:1rem 1.15rem}
+  .bcard.left{border-color:rgba(255,178,77,.35)} .bcard.right{border-color:rgba(57,214,255,.4)}
+  .bhead{display:flex;align-items:center;gap:.6rem;margin-bottom:.4rem}
+  .bhead .dot{width:9px;height:9px;border-radius:50%}
+  .dot.amber{background:var(--amber);box-shadow:0 0 10px var(--amber)} .dot.cyan{background:var(--cyan);box-shadow:0 0 10px var(--cyan)}
+  .bhead h3{font-size:1.02rem}
+  .bcard p{color:var(--muted);font-size:.9rem;line-height:1.5}
+  .pivot{text-align:center;font-family:var(--mono);color:var(--amber);font-size:.86rem;letter-spacing:.12em;margin:.9rem 0 .2rem}
+
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:1.6rem;align-items:stretch;width:100%}
+  .vcard{background:var(--glass);border:1px solid var(--line);border-radius:16px;padding:1.3rem 1.4rem;display:flex;flex-direction:column}
+  .vcard.left{border-color:rgba(255,178,77,.3)} .vcard.right{border-color:rgba(57,214,255,.35)}
+  .vcard .vt{font-family:var(--mono);font-size:.72rem;letter-spacing:.16em}
+  .vcard.left .vt{color:var(--amber)} .vcard.right .vt{color:var(--cyan)}
+  .vcard h3{font-size:1.3rem;margin:.3rem 0 .1rem}
+  ul.clean{list-style:none;display:flex;flex-direction:column;gap:.55rem;margin-top:.6rem}
+  ul.clean li{display:flex;gap:.6rem;color:var(--muted);font-size:.95rem;line-height:1.45}
+  ul.clean li::before{content:"▹";color:var(--cyan);flex:none}
+  .vcard.left ul.clean li::before{color:var(--amber)}
+  .foot{margin-top:1rem;background:var(--glass);border:1px solid var(--line);border-radius:12px;padding:.75rem 1rem;
+    color:var(--muted);font-size:.9rem;line-height:1.5}
+  .hud{position:fixed;z-index:6;font-family:var(--mono);font-size:.7rem;letter-spacing:.14em;color:var(--faint)}
+  .hud.tl{top:3vh;left:7vw}.hud.tr{top:3vh;right:7vw;color:var(--cyan);opacity:.8}
+  .hud.br{bottom:3.2vh;right:7vw}
+  .progress{position:fixed;left:0;bottom:0;height:2px;background:linear-gradient(90deg,var(--cyan),var(--amber));z-index:7;transition:width .5s;box-shadow:0 0 10px rgba(57,214,255,.6)}
+  .nav-hint{position:fixed;bottom:3vh;left:50%;transform:translateX(-50%);z-index:6;font-family:var(--mono);font-size:.68rem;letter-spacing:.2em;color:var(--faint);opacity:.7}
+  .reveal>*{opacity:0;transform:translateY(14px);transition:opacity .55s ease,transform .55s ease}
+  .slide.active .reveal>*{opacity:1;transform:none}
+  .slide.active .reveal>*:nth-child(1){transition-delay:.1s}
+  .slide.active .reveal>*:nth-child(2){transition-delay:.2s}
+  .slide.active .reveal>*:nth-child(3){transition-delay:.3s}
+  .slide.active .reveal>*:nth-child(4){transition-delay:.4s}
+  .spin{transform-origin:center;animation:spin 60s linear infinite}
+  .spin-r{transform-origin:center;animation:spin 80s linear infinite reverse}
+  @keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<canvas id="stars"></canvas>
+<div class="glow-bg"></div>
+<div class="hud tl">GEOAEROSPACE // 궤도 추정 원리</div>
+<div class="hud tr" id="clock">SYS · NOMINAL</div>
+<div class="hud br mono"><span id="pageno">01</span> / 02</div>
+<div class="progress" id="prog"></div>
+<div class="nav-hint">← → 이동</div>
+
+<div id="deck">
+
+  <!-- SLIDE 1: 원리 파이프라인 -->
+  <section class="slide">
+    <div class="reveal" style="width:100%">
+      <div class="kicker">원리 · 이론 · 기술 ① 공통 토대</div>
+      <h2>궤도를 "추정"한다는 것 = <span class="accent">SGP4 전파</span></h2>
+      <p class="sub" style="margin:.6rem 0 1.1rem;max-width:74ch">두 뷰는 <b>똑같은 계산</b>으로 위성 위치를 구한다. 통계적 추측이 아니라, 물리 모델로 <b class="accent">지금 위성이 어디 있는가</b>를 전파(propagation)하는 것이다.</p>
+
+      <div class="pipe">
+        <div class="stage">
+          <div class="tag">DATA · 입력</div>
+          <h3>TLE (두 줄)</h3>
+          <p>경사각·이심률·평균운동 등. <b>일반 케플러가 아닌 SGP4 전용으로 피팅된 평균 궤도요소.</b></p>
+        </div>
+        <div class="arrow">→</div>
+        <div class="stage eng">
+          <div class="tag">ENGINE · 이론</div>
+          <h3>SGP4 / SDP4</h3>
+          <p>지구 편평률(J2·J3·J4)·대기 항력(B*)을 <b>해석적으로</b> 근사하는 섭동 이론. Hoots&amp;Roehrich 1980 · Vallado 2006.</p>
+        </div>
+        <div class="arrow">→</div>
+        <div class="stage">
+          <div class="tag">OUTPUT · 좌표</div>
+          <h3>ECI (TEME) 위치·속도</h3>
+          <p>결과는 <b>관성계</b> 좌표. <span class="mono" style="font-size:.82rem">twoline2satrec → propagate</span></p>
+        </div>
+      </div>
+
+      <div class="pivot">▽ 여기서 두 뷰가 갈린다 — 차이는 단 하나, 지구 자전각 GMST</div>
+      <div class="branch">
+        <div class="bcard left">
+          <div class="bhead"><span class="dot amber"></span><h3>GMST를 <span class="amber">위성에</span> 적용</h3></div>
+          <p>ECI → ECEF → 경위도(측지). 지구고정계로 내려 <b>2D 지도</b>에 올린다. → <b class="amber">지상궤적(사인파)</b></p>
+        </div>
+        <div class="bcard right">
+          <div class="bhead"><span class="dot cyan"></span><h3>GMST를 <span class="accent">지구에만</span> 적용</h3></div>
+          <p>ECI 좌표를 <b>변환 없이</b> 3D 씬에 그대로 배치. 위성은 안 돌리고 지구만 돌린다. → <b class="accent">닫힌 타원</b></p>
+        </div>
+      </div>
+      <p class="mono" style="margin-top:.9rem;color:var(--faint);font-size:.76rem">ECI(관성계) ↔ ECEF(지구고정)의 유일한 차이 = GMST(그리니치 평균 항성시) 회전 · satellite.gstime(date)</p>
+    </div>
+  </section>
+
+  <!-- SLIDE 2: 두 틀 비교 -->
+  <section class="slide">
+    <div class="reveal" style="width:100%">
+      <div class="kicker">원리 · 이론 · 기술 ② 하나의 계산, 두 개의 틀</div>
+      <h2>같은 ECI를 <span class="amber">어느 틀</span>에 놓느냐</h2>
+      <div class="two" style="margin-top:1.1rem">
+        <!-- 2D -->
+        <div class="vcard left">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start">
+            <div><div class="vt">LAYER A · 2D GLOBE</div><h3>지구고정계 (ECEF)</h3></div>
+            <svg viewBox="0 0 120 120" width="112">
+              <circle cx="60" cy="60" r="42" fill="#0c2138" stroke="rgba(255,178,77,.3)"/>
+              <g class="spin" opacity=".3" stroke="#2b4a6b" fill="none" stroke-width=".8"><ellipse cx="60" cy="60" rx="42" ry="15"/><line x1="18" y1="60" x2="102" y2="60"/></g>
+              <path d="M18 60 Q39 44 60 60 T102 56" stroke="#ffb24d" fill="none" stroke-width="2"/>
+              <path d="M18 74 Q39 58 60 74 T102 70" stroke="#ffb24d" opacity=".4" fill="none" stroke-width="2"/>
+            </svg>
+          </div>
+          <ul class="clean">
+            <li><b>원리:</b> 지구가 궤도 아래에서 자전 → 지상궤적이 서쪽으로 밀려 <b class="amber">사인파형</b></li>
+            <li><b>변환:</b> <span class="mono" style="font-size:.82rem">eciToGeodetic(pos, gmst)</span> → lat·lon·alt(WGS-84)</li>
+            <li><b>산출:</b> 궤도 링(고도 유지) + 지상궤적(height=0) · ±180° 분할</li>
+          </ul>
+          <div style="margin-top:.7rem"><span class="pill a">MapLibre v5 globe</span><span class="pill a">deck.gl PathLayer</span></div>
+        </div>
+        <!-- 3D -->
+        <div class="vcard right">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start">
+            <div><div class="vt">LAYER B · 3D 실축척</div><h3>관성계 (ECI)</h3></div>
+            <svg viewBox="0 0 120 120" width="112">
+              <circle cx="60" cy="60" r="34" fill="#0c2138" stroke="rgba(57,214,255,.3)"/>
+              <g class="spin" opacity=".3" stroke="#2b4a6b" fill="none" stroke-width=".8"><ellipse cx="60" cy="60" rx="34" ry="12"/></g>
+              <ellipse cx="60" cy="60" rx="50" ry="20" transform="rotate(24 60 60)" stroke="#39d6ff" fill="none" stroke-width="2.2"/>
+              <circle cx="108" cy="52" r="3" fill="#ffb24d"/>
+            </svg>
+          </div>
+          <ul class="clean">
+            <li><b>원리:</b> ECI는 관성계라 회전 없음 → 궤도는 <b class="accent">고정된 닫힌 타원</b>, 지구만 돈다</li>
+            <li><b>배치:</b> ECI 직접 사용 <span class="mono" style="font-size:.8rem">(x,z,−y)×.001</span> · <span class="mono" style="font-size:.8rem">earth.rotation.y=gmst</span></li>
+            <li><b>스케일:</b> 1 unit = 1000 km, R=6.371 → LEO가 지구에 밀착한 실축척</li>
+          </ul>
+          <div style="margin-top:.7rem"><span class="pill c">Three.js Line</span><span class="pill c">256등분 SGP4</span></div>
+        </div>
+      </div>
+      <div class="foot">
+        <b class="accent">정밀 버전(ISS):</b> SGP4는 TEME, NASA 정밀 ephemeris는 J2000 좌표 — 세차로 <b>23~44 km</b> 어긋난다. <b>TEME↔J2000 프레임 변환</b>(IAU-76 세차 + IAU-80 장동, Skyfield 대비 잔차 0.8 m)으로 맞춘 뒤 렌더 좌표에 직접 사용.
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+(function(){
+  const cv=document.getElementById('stars'),cx=cv.getContext('2d');let W,H,stars=[];
+  function rs(){W=cv.width=innerWidth;H=cv.height=innerHeight;stars=[];const n=Math.min(200,Math.floor(W*H/9500));
+    for(let i=0;i<n;i++)stars.push({x:Math.random()*W,y:Math.random()*H,z:Math.random()*.8+.2,p:Math.random()*6.28});}
+  rs();addEventListener('resize',rs);
+  function draw(t){cx.clearRect(0,0,W,H);for(const s of stars){const tw=.5+.5*Math.sin(t/900+s.p);
+    cx.globalAlpha=(.15+.5*tw)*s.z;cx.fillStyle=s.z>.7?'#bfe6ff':'#7fa8d8';cx.beginPath();cx.arc(s.x,s.y,s.z*1.3,0,7);cx.fill();}
+    cx.globalAlpha=1;requestAnimationFrame(draw);}
+  requestAnimationFrame(draw);
+  const slides=[...document.querySelectorAll('.slide')];let i=0;
+  const prog=document.getElementById('prog'),pageno=document.getElementById('pageno');
+  function go(n){n=Math.max(0,Math.min(slides.length-1,n));slides[i].classList.remove('active');i=n;
+    slides[i].classList.add('active');prog.style.width=((i+1)/slides.length*100)+'%';pageno.textContent=String(i+1).padStart(2,'0');}
+  addEventListener('keydown',e=>{if(['ArrowRight','ArrowDown',' ','PageDown'].includes(e.key)){e.preventDefault();go(i+1);}
+    else if(['ArrowLeft','ArrowUp','PageUp'].includes(e.key)){e.preventDefault();go(i-1);}});
+  document.getElementById('deck').addEventListener('click',e=>{(e.clientX>innerWidth*.5)?go(i+1):go(i-1);});
+  setInterval(()=>{document.getElementById('clock').textContent='T '+new Date().toLocaleTimeString('en-GB');},1000);
+  go(0);
+})();
+</script>
+</body>
+</html>

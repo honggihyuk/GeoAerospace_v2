@@ -16,9 +16,26 @@ export default function TopBar() {
   const [cmd, setCmd] = useState("");
   const busy = useStore((s) => s.agentBusy);
   const tleSource = useStore((s) => s.tleSource);
-  const tleState = tleSource === "loading" ? "loading" : tleSource === "demo" ? "demo" : "live";
-  const tleColor = tleState === "live" ? "var(--ok)" : tleState === "loading" ? "var(--cyan)" : "var(--warn)";
-  const tleText = tleState === "live" ? `LIVE · ${tleSource}` : tleState === "loading" ? "LOADING…" : "DEMO";
+  // 일부라도 데모/스테일이 섞이면 LIVE라고 하지 않는다 (고도화 §A4 정직성).
+  // 이전 구현은 첫 위성의 소스만 보고 태깅해 절반이 744일 데모여도 LIVE로 표시했다.
+  const degraded = tleSource.includes("demo") || tleSource.includes("stale");
+  const tleState =
+    tleSource === "loading" ? "loading" : tleSource === "demo" ? "demo" : degraded ? "partial" : "live";
+  const tleColor =
+    tleState === "live" ? "var(--ok)" : tleState === "loading" ? "var(--cyan)" : "var(--warn)";
+  const tleText =
+    tleState === "live"
+      ? `LIVE · ${tleSource}`
+      : tleState === "loading"
+        ? "LOADING…"
+        : tleState === "partial"
+          ? `PARTIAL · ${tleSource}`
+          : "DEMO";
+  // 실사 영상 배지 — 3D 우주 뷰에서만 의미 있음 (고도화 B1)
+  const view = useStore((s) => s.view);
+  const imagery = useStore((s) => s.imagery);
+  const imgColor = imagery.status === "live" ? "var(--ok)" : imagery.status === "loading" ? "var(--cyan)" : "var(--warn)";
+  const imgText = imagery.status === "live" ? `GIBS · ${imagery.date}` : imagery.status === "loading" ? "LOADING…" : "OFF";
   useEffect(() => {
     setClock(utcClock());
     const id = setInterval(() => setClock(utcClock()), 1000);
@@ -65,6 +82,14 @@ export default function TopBar() {
             {tleText}
           </span>
         </span>
+        {view === "space" && (
+          <span style={S.chip}>
+            <span style={{ color: "var(--faint)" }}>IMAGERY</span>
+            <span className="mono" style={{ color: imgColor }}>
+              {imgText}
+            </span>
+          </span>
+        )}
         <span className="mono" style={S.clock}>
           {clock}
         </span>

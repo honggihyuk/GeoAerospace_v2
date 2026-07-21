@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>GeoAerospace · Orbital Command — 구현 발표</title>
+<style>
+  :root{
+    --bg:#05070f; --bg2:#0a1020; --ink:#e9f0fb; --muted:#8fa6c2; --faint:#5b6f8c;
+    --cyan:#39d6ff; --cyan-dim:#1b6f8c; --amber:#ffb24d; --amber-dim:#7a5320;
+    --line:rgba(120,160,210,.16); --glass:rgba(18,28,48,.55);
+    --mono:ui-monospace,"SF Mono","Cascadia Mono","Roboto Mono",Menlo,Consolas,monospace;
+    --sans:"Pretendard",system-ui,-apple-system,"Segoe UI","Malgun Gothic",sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg); color:var(--ink); font-family:var(--sans);
+    overflow:hidden; -webkit-font-smoothing:antialiased;
+  }
+  #stars{position:fixed;inset:0;z-index:0}
+  .glow-bg{position:fixed;inset:0;z-index:0;pointer-events:none;
+    background:
+      radial-gradient(60% 45% at 78% 18%, rgba(57,214,255,.10), transparent 60%),
+      radial-gradient(55% 50% at 20% 85%, rgba(255,178,77,.07), transparent 60%),
+      radial-gradient(120% 80% at 50% 120%, rgba(10,20,45,.9), transparent 55%);}
+  #deck{position:relative;z-index:2;height:100vh;width:100vw}
+  .slide{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;
+    padding:6vh 8vw;opacity:0;visibility:hidden;transform:translateY(24px) scale(.99);
+    transition:opacity .6s ease,transform .6s cubic-bezier(.2,.7,.2,1),visibility .6s;}
+  .slide.active{opacity:1;visibility:visible;transform:none}
+  .slide.prev{transform:translateY(-24px) scale(.99)}
+
+  /* typography */
+  .kicker{font-family:var(--mono);font-size:.8rem;letter-spacing:.28em;text-transform:uppercase;
+    color:var(--cyan);margin-bottom:1.1rem;display:flex;align-items:center;gap:.7rem}
+  .kicker::before{content:"";width:26px;height:1px;background:linear-gradient(90deg,var(--cyan),transparent)}
+  h1{font-size:clamp(2.4rem,6vw,5.2rem);font-weight:800;line-height:1.02;letter-spacing:-.02em}
+  h2{font-size:clamp(1.7rem,3.7vw,3.1rem);font-weight:750;line-height:1.08;letter-spacing:-.01em}
+  h3{font-size:clamp(1.05rem,1.7vw,1.4rem);font-weight:700}
+  p.lead{font-size:clamp(1.05rem,1.7vw,1.45rem);color:var(--muted);line-height:1.6;max-width:42ch}
+  .accent{color:var(--cyan)}
+  .amber{color:var(--amber)}
+  .big-quote{font-size:clamp(1.6rem,3.4vw,2.9rem);font-weight:700;line-height:1.25;max-width:20ch}
+  .sub{color:var(--muted);font-size:clamp(.98rem,1.5vw,1.2rem);line-height:1.6}
+  .mono{font-family:var(--mono)}
+  .two{display:grid;grid-template-columns:1.05fr .95fr;gap:5vw;align-items:center;height:100%}
+  @media (max-width:900px){.two{grid-template-columns:1fr;gap:3vh}}
+
+  /* glass cards */
+  .card{background:var(--glass);border:1px solid var(--line);border-radius:16px;padding:1.3rem 1.4rem;
+    backdrop-filter:blur(8px);position:relative;overflow:hidden}
+  .card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--cyan);opacity:.7}
+  .card.amberc::before{background:var(--amber)}
+  .cards3{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem}
+  .cards2{display:grid;grid-template-columns:repeat(2,1fr);gap:1rem}
+  @media (max-width:900px){.cards3{grid-template-columns:1fr}.cards2{grid-template-columns:1fr}}
+  .card .num{font-family:var(--mono);color:var(--cyan);font-size:.78rem;letter-spacing:.15em}
+  .card h3{margin:.35rem 0 .4rem}
+  .card p{color:var(--muted);font-size:.98rem;line-height:1.55}
+
+  /* stat tiles */
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;width:100%}
+  @media (max-width:900px){.stats{grid-template-columns:repeat(2,1fr)}}
+  .stat{background:var(--glass);border:1px solid var(--line);border-radius:14px;padding:1.3rem 1.2rem;text-align:left}
+  .stat .v{font-family:var(--mono);font-size:clamp(1.8rem,3.4vw,2.9rem);font-weight:700;color:var(--ink);
+    text-shadow:0 0 22px rgba(57,214,255,.35)}
+  .stat .v.a{color:var(--amber);text-shadow:0 0 22px rgba(255,178,77,.3)}
+  .stat .l{color:var(--muted);font-size:.85rem;margin-top:.3rem;line-height:1.4}
+
+  /* flow steps */
+  .flow{display:flex;flex-direction:column;gap:.75rem;width:100%}
+  .step{display:flex;gap:1rem;align-items:flex-start;background:var(--glass);border:1px solid var(--line);
+    border-radius:14px;padding:1rem 1.2rem}
+  .step .idx{font-family:var(--mono);color:var(--cyan);font-size:.85rem;min-width:2.4rem;padding-top:.15rem}
+  .step h3{font-size:1.08rem}
+  .step p{color:var(--muted);font-size:.95rem;margin-top:.2rem;line-height:1.5}
+
+  .pill{display:inline-block;font-family:var(--mono);font-size:.72rem;letter-spacing:.12em;padding:.28rem .6rem;
+    border-radius:999px;border:1px solid var(--line);color:var(--muted);margin:.2rem .3rem .2rem 0}
+  .pill.ok{color:#7ef0c0;border-color:rgba(126,240,192,.3)}
+  .pill.warn{color:var(--amber);border-color:rgba(255,178,77,.3)}
+
+  /* chrome */
+  .frame{position:fixed;inset:0;z-index:5;pointer-events:none}
+  .hud{position:fixed;z-index:6;font-family:var(--mono);font-size:.72rem;letter-spacing:.14em;color:var(--faint)}
+  .hud.tl{top:3vh;left:8vw}.hud.tr{top:3vh;right:8vw;text-align:right;color:var(--cyan);opacity:.8}
+  .hud.bl{bottom:3.4vh;left:8vw}.hud.br{bottom:3.4vh;right:8vw}
+  .progress{position:fixed;left:0;bottom:0;height:2px;background:linear-gradient(90deg,var(--cyan),var(--amber));
+    z-index:7;transition:width .5s ease;box-shadow:0 0 10px rgba(57,214,255,.6)}
+  .dots{position:fixed;right:2.4vw;top:50%;transform:translateY(-50%);z-index:7;display:flex;flex-direction:column;gap:9px}
+  .dot{width:8px;height:8px;border-radius:50%;border:1px solid var(--faint);cursor:pointer;transition:.3s}
+  .dot.on{background:var(--cyan);border-color:var(--cyan);box-shadow:0 0 10px var(--cyan)}
+  .nav-hint{position:fixed;bottom:3.2vh;left:50%;transform:translateX(-50%);z-index:6;
+    font-family:var(--mono);font-size:.7rem;letter-spacing:.2em;color:var(--faint);opacity:.7}
+
+  .reveal>*{opacity:0;transform:translateY(16px);transition:opacity .6s ease,transform .6s ease}
+  .slide.active .reveal>*{opacity:1;transform:none}
+  .slide.active .reveal>*:nth-child(1){transition-delay:.12s}
+  .slide.active .reveal>*:nth-child(2){transition-delay:.22s}
+  .slide.active .reveal>*:nth-child(3){transition-delay:.32s}
+  .slide.active .reveal>*:nth-child(4){transition-delay:.42s}
+  .slide.active .reveal>*:nth-child(5){transition-delay:.52s}
+  .slide.active .reveal>*:nth-child(6){transition-delay:.62s}
+
+  svg .spin{transform-origin:center;animation:spin 60s linear infinite}
+  svg .spin-r{transform-origin:center;animation:spin 90s linear infinite reverse}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .float{animation:float 7s ease-in-out infinite}
+  @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
+  .pulse{animation:pulse 3s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:.55}50%{opacity:1}}
+  .sec-tag{font-family:var(--mono);font-size:.82rem;letter-spacing:.3em;color:var(--amber);text-transform:uppercase}
+  .divider{height:1px;background:linear-gradient(90deg,var(--line),transparent);margin:1.2rem 0}
+  ul.clean{list-style:none;display:flex;flex-direction:column;gap:.7rem}
+  ul.clean li{display:flex;gap:.7rem;color:var(--muted);font-size:1.02rem;line-height:1.5}
+  ul.clean li::before{content:"▹";color:var(--cyan);flex:none}
+</style>
+</head>
+<body>
+<canvas id="stars"></canvas>
+<div class="glow-bg"></div>
+
+<div class="hud tl">GEOAEROSPACE // ORBITAL COMMAND</div>
+<div class="hud tr" id="clock">SYS · NOMINAL</div>
+<div class="hud bl">2026 · 구현 발표</div>
+<div class="hud br mono"><span id="pageno">01</span> / 18</div>
+<div class="dots" id="dots"></div>
+<div class="progress" id="prog"></div>
+<div class="nav-hint">← → 또는 스페이스로 이동</div>
+
+<div id="deck">
+
+  <!-- 1 COVER -->
+  <section class="slide">
+    <div class="two">
+      <div class="reveal">
+        <div class="kicker">항공우주 데이터 · 대화형 지도 플랫폼</div>
+        <h1>Geo<span class="accent">Aerospace</span><br><span class="amber" style="font-weight:750">Orbital Command</span></h1>
+        <p class="lead" style="margin-top:1.4rem">위성 궤도를 <b class="accent">구(球)</b> 위에서 보고,<br>하늘의 항공기를 실시간으로 좇는다.<br>그 구상과 구현의 기록.</p>
+        <div style="margin-top:1.8rem" class="mono sub">MapLibre v5 · deck.gl · Three.js · SGP4</div>
+      </div>
+      <div class="reveal" style="display:flex;justify-content:center">
+        <!-- HERO GLOBE -->
+        <svg viewBox="0 0 420 420" width="min(46vw,480px)" class="float" aria-label="발광 궤도 지구본">
+          <defs>
+            <radialGradient id="earth" cx="42%" cy="38%" r="70%">
+              <stop offset="0%" stop-color="#1b3d63"/><stop offset="55%" stop-color="#0c2138"/><stop offset="100%" stop-color="#050b16"/>
+            </radialGradient>
+            <radialGradient id="atmo" cx="50%" cy="50%" r="50%">
+              <stop offset="72%" stop-color="rgba(57,214,255,0)"/><stop offset="90%" stop-color="rgba(57,214,255,.35)"/><stop offset="100%" stop-color="rgba(57,214,255,0)"/>
+            </radialGradient>
+            <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#39d6ff"/><stop offset="100%" stop-color="#ffb24d"/>
+            </linearGradient>
+          </defs>
+          <circle cx="210" cy="210" r="150" fill="url(#atmo)"/>
+          <circle cx="210" cy="210" r="120" fill="url(#earth)" stroke="rgba(57,214,255,.25)" stroke-width="1"/>
+          <g class="spin" opacity=".35" stroke="#39d6ff" stroke-width="1" fill="none">
+            <ellipse cx="210" cy="210" rx="120" ry="42"/><ellipse cx="210" cy="210" rx="120" ry="84"/>
+            <line x1="90" y1="210" x2="330" y2="210"/><line x1="210" y1="90" x2="210" y2="330"/>
+          </g>
+          <g class="spin-r" fill="none">
+            <ellipse cx="210" cy="210" rx="168" ry="70" transform="rotate(28 210 210)" stroke="url(#ring)" stroke-width="2.2" opacity=".9"/>
+            <ellipse cx="210" cy="210" rx="150" ry="120" transform="rotate(-18 210 210)" stroke="#39d6ff" stroke-width="1.6" opacity=".55"/>
+          </g>
+          <g class="spin-r"><circle cx="378" cy="210" r="5" fill="#ffb24d"><animate attributeName="opacity" values="1;.4;1" dur="2s" repeatCount="indefinite"/></circle></g>
+          <circle cx="210" cy="210" r="120" fill="none" stroke="rgba(255,255,255,.05)" stroke-width="14"/>
+        </svg>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2 THE QUESTION -->
+  <section class="slide">
+    <div class="reveal" style="max-width:60ch">
+      <div class="kicker">시작 · 하나의 질문</div>
+      <p class="big-quote">"위성 궤도를 평평한 지도가 아니라,<br><span class="accent">둥근 구 위에서</span> 볼 수는 없을까?"</p>
+      <div class="divider"></div>
+      <p class="sub" style="max-width:52ch">이 한 문장이 프로젝트의 <b class="amber">북극성(North Star)</b>이 되었다. 항공 트래킹·RAG·VLM·자연어 제어는 모두 이 핵심을 <b>뒷받침하기 위해</b> 존재한다. 먼저 답할 것은 단 하나 — 궤도를 구 위에 어떻게 올릴 것인가.</p>
+    </div>
+  </section>
+
+  <!-- 3 THE GAP: everything is 2D -->
+  <section class="slide">
+    <div class="two">
+      <div class="reveal">
+        <div class="kicker">참조 조사 · 발견</div>
+        <h2>세상의 지도는<br>모두 <span class="amber">평평</span>했다</h2>
+        <p class="sub" style="margin-top:1.2rem;max-width:44ch">앞선 도구들을 조사했다. 놀랍게도 위성·지리 시각화의 대표 주자들이 하나같이 <b>2D 투영</b>에 머물러 있었다. NASA의 Worldview조차 그랬다.</p>
+        <p class="sub" style="margin-top:1rem;max-width:44ch">여기서 <b class="accent">차별점</b>을 발견했다. "궤도를 구형으로 본다"는 이들이 다루지 않은 영역이며, 그래서 우리가 가장 공들일 지점이 되었다.</p>
+      </div>
+      <div class="reveal">
+        <div class="flow">
+          <div class="step"><div class="idx">REF·1</div><div><h3>NASA Worldview</h3><p>OpenLayers 기반 — <span class="amber">2D 투영 전용</span>. 3D 엔진 없음. 우리는 레이어·시간축 개념만 취했다.</p></div></div>
+          <div class="step"><div class="idx">REF·2</div><div><h3>OSIRIS</h3><p>MapLibre + deck.gl 실시간 대시보드 — <span class="amber">2D</span>. 다중소스 폴백·회복탄력 기법을 차용.</p></div></div>
+          <div class="step"><div class="idx">REF·3</div><div><h3>WorldWideView</h3><p>이벤트버스·플러그인 아키텍처 개념을 참고.</p></div></div>
+          <div class="step" style="border-color:rgba(57,214,255,.4)"><div class="idx" style="color:var(--amber)">US</div><div><h3 class="accent">GeoAerospace — 3D 구형</h3><p>참조 저장소가 하지 않은 영역. 이 프로젝트의 실질적 차별점.</p></div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4 PHILOSOPHY: separation -->
+  <section class="slide">
+    <div class="reveal" style="width:100%">
+      <div class="kicker">설계 철학 · 가장 중요한 원칙</div>
+      <h2 style="max-width:24ch">각자 <span class="accent">잘하는 것</span>에만 집중시킨다</h2>
+      <p class="sub" style="margin:1rem 0 1.6rem;max-width:60ch">"<b class="amber">VLM이 궤도 수치를 해석한다</b>"는 말은 기술적 범주 오류(category error)다. 궤도는 이미지가 아니라 숫자이기 때문이다. 그래서 역할을 넷으로 나눴다.</p>
+      <div class="cards3" style="grid-template-columns:repeat(4,1fr)">
+        <div class="card"><div class="num">ENGINE</div><h3>결정론적 물리</h3><p>궤도 계산은 <b>SGP4</b> 물리엔진이. 오차는 있어도 환각은 없다.</p></div>
+        <div class="card"><div class="num">VISION</div><h3>영상 해석 VLM</h3><p>위성 <b>영상(픽셀)</b>만. 궤도 숫자는 만지지 않는다.</p></div>
+        <div class="card"><div class="num">KNOWLEDGE</div><h3>지식 검색 RAG</h3><p>문서·개념은 <b>벡터 검색</b>으로.</p></div>
+        <div class="card amberc"><div class="num" style="color:var(--amber)">CONDUCTOR</div><h3 class="amber">조율자 LLM</h3><p>셋을 <b>도구로 호출·조율</b>. 직접 산수하지 않는다.</p></div>
+      </div>
+      <p class="mono sub" style="margin-top:1.4rem;color:var(--faint)">→ 이 분리가 아키텍처 전체를 관통한다.</p>
+    </div>
+  </section>
+
+  <!-- 5 SECTION: REQ 1 -->
+  <section class="slide">
+    <div class="reveal" style="text-align:center;width:100%">
+      <div class="sec-tag">요구사항 ①</div>
+      <h1 style="margin:1rem 0">위성 궤도의<br><span class="accent">구형(球) 시각화</span></h1>
+      <p class="sub" style="margin:0 auto;max-width:40ch">참조 저장소가 하지 못한 것. 이 프로젝트가 가장 깊이 판 곳.</p>
+      <div class="mono" style="margin-top:1.6rem;color:var(--amber);letter-spacing:.2em">STATUS · 구현 완료 · 코드 대조 확인</div>
+    </div>
+  </section>
+
+  <!-- 6 WHY THREE VIEWS -->
+  <section class="slide">
+    <div class="two">
+      <div class="reveal">
+        <div class="kicker">판단의 흐름 · 왜 셋인가</div>
+        <h2>궤도가 <span class="amber">휘어</span> 보이는<br>진짜 이유</h2>
+        <p class="sub" style="margin-top:1.1rem;max-width:44ch">지구고정 좌표에 궤도를 그리면, 지구가 자전하는 탓에 궤도가 매 순간 휘어 보인다. 지상궤적이 <b>사인 곡선</b>이 되는 이유다.</p>
+        <p class="sub" style="margin-top:1rem;max-width:44ch">반대로 <b class="accent">관성계(ECI)</b>에 그리면 궤도는 고정된 타원이고, 지구가 그 안에서 돈다 — 이것이 물리적으로 <b>옳은 그림</b>이다.</p>
+        <p class="sub" style="margin-top:1rem;max-width:44ch">두 그림이 <b>모두</b> 필요했다. 그래서 뷰를 나눴다.</p>
+      </div>
+      <div class="reveal" style="display:flex;gap:1.4rem;justify-content:center;align-items:center">
+        <div style="text-align:center">
+          <svg viewBox="0 0 180 180" width="min(20vw,200px)">
+            <circle cx="90" cy="90" r="60" fill="url(#earth)" stroke="rgba(255,178,77,.3)"/>
+            <path d="M20 90 Q 55 60 90 90 T 160 90" stroke="#ffb24d" fill="none" stroke-width="2"/>
+            <path d="M20 108 Q 55 78 90 108 T 160 108" stroke="#ffb24d" opacity=".4" fill="none" stroke-width="2"/>
+          </svg>
+          <div class="mono sub" style="font-size:.78rem;margin-top:.4rem">지구고정 · <span class="amber">사인파</span></div>
+        </div>
+        <div style="text-align:center">
+          <svg viewBox="0 0 180 180" width="min(20vw,200px)">
+            <circle cx="90" cy="90" r="60" fill="url(#earth)" stroke="rgba(57,214,255,.3)"/>
+            <ellipse cx="90" cy="90" rx="78" ry="34" transform="rotate(24 90 90)" stroke="#39d6ff" fill="none" stroke-width="2.2"/>
+          </svg>
+          <div class="mono sub" style="font-size:.78rem;margin-top:.4rem">관성계 · <span class="accent">닫힌 타원</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 7 THREE WINDOWS -->
+  <section class="slide">
+    <div class="reveal" style="width:100%">
+      <div class="kicker">구현 · 세 개의 창</div>
+      <h2 style="margin-bottom:1.3rem">하나의 궤도, <span class="accent">세 가지 시선</span></h2>
+      <div class="cards3">
+        <div class="card">
+          <svg viewBox="0 0 100 70" width="100%" style="margin-bottom:.6rem"><circle cx="50" cy="38" r="26" fill="url(#earth)" stroke="rgba(57,214,255,.3)"/><path d="M24 38 Q40 26 50 38 T78 34" stroke="#39d6ff" fill="none" stroke-width="1.6"/><circle cx="66" cy="24" r="2.5" fill="#ffb24d"/></svg>
+          <div class="num">LAYER A</div><h3>MapLibre 글로브</h3><p>2D 지도를 그대로 구에 감아, 지상궤적·항공기·산불을 구 위에서 본다.</p>
+        </div>
+        <div class="card amberc">
+          <svg viewBox="0 0 100 70" width="100%" style="margin-bottom:.6rem"><circle cx="50" cy="38" r="22" fill="url(#earth)"/><ellipse cx="50" cy="38" rx="40" ry="16" transform="rotate(22 50 38)" stroke="#ffb24d" fill="none" stroke-width="1.8"/><circle cx="88" cy="30" r="2.5" fill="#39d6ff"/></svg>
+          <div class="num" style="color:var(--amber)">LAYER B · 핵심</div><h3>관성계 3D 뷰</h3><p>궤도 타원을 <b>실축척</b>으로 공간에 띄운다. 지구만 GMST로 자전.</p>
+        </div>
+        <div class="card">
+          <svg viewBox="0 0 100 70" width="100%" style="margin-bottom:.6rem"><circle cx="50" cy="42" r="24" fill="url(#earth)"/><polygon points="50,14 46,24 54,24" fill="#39d6ff"/><path d="M50 24 L44 40 L56 40 Z" fill="rgba(57,214,255,.25)" stroke="#39d6ff" stroke-width=".6"/></svg>
+          <div class="num">LAYER C</div><h3>지도 위 3D 레이어</h3><p>2D 지도 위에 위성 본체·센서 콘을 Three.js로 얹는다.</p>
+        </div>
+      </div>
+      <p class="mono sub" style="margin-top:1.2rem;color:var(--faint)">SpaceView.tsx · orbitalLayer.ts · orbit.ts — 코드에서 GMST 자전·ECI 링 확인</p>
+    </div>
+  </section>
+
+  <!-- 8 EARTH SHADER -->
+  <section class="slide">
+    <div class="two">
+      <div class="reveal">
+        <div class="kicker">디테일 · 살아있는 지구</div>
+        <h2>텍스처 한 장이<br>아니라, <span class="accent">다섯 겹</span></h2>
+        <p class="sub" style="margin-top:1.1rem;max-width:44ch">지구 표면은 단순 이미지가 아니라 셰이더에서 다섯 겹을 합성한다. "오늘" 위성영상은 대부분 비어 있다는 <b>실측 문제</b>를 3단 폴백으로 풀었다.</p>
+        <ul class="clean" style="margin-top:1.2rem">
+          <li>당일 트루컬러 → 전날 → 정적 BlueMarble <span class="amber">(3단 폴백)</span></li>
+          <li>야간 도시광 · 밤면</li>
+          <li>태양각 터미네이터 + 박명 띠</li>
+          <li>GK2A 한반도 관측 격자 오버레이</li>
+        </ul>
+      </div>
+      <div class="reveal" style="display:flex;justify-content:center">
+        <svg viewBox="0 0 300 300" width="min(38vw,380px)">
+          <defs><clipPath id="cg"><circle cx="150" cy="150" r="110"/></clipPath></defs>
+          <circle cx="150" cy="150" r="132" fill="url(#atmo)"/>
+          <g clip-path="url(#cg)">
+            <rect x="40" y="40" width="220" height="220" fill="url(#earth)"/>
+            <path d="M40 150 h220" stroke="rgba(255,178,77,.5)" stroke-width="20" opacity=".5"/>
+            <rect x="150" y="40" width="110" height="220" fill="rgba(6,10,20,.55)"/>
+            <circle cx="205" cy="120" r="2" fill="#ffe08a"/><circle cx="215" cy="140" r="1.6" fill="#ffe08a"/><circle cx="198" cy="150" r="1.6" fill="#ffe08a"/><circle cx="220" cy="165" r="1.4" fill="#ffe08a"/>
+            <g transform="translate(120,120)"><rect width="26" height="20" fill="none" stroke="#39d6ff" stroke-width="1.4" opacity=".9"/><rect width="26" height="20" fill="rgba(57,214,255,.12)"/></g>
+          </g>
+          <circle cx="150" cy="150" r="110" fill="none" stroke="rgba(57,214,255,.3)" stroke-width="1"/>
+          <text x="150" y="285" text-anchor="middle" class="mono" fill="#5b6f8c" font-size="10">EQUIRECTANGULAR UV · lon=u·360−180</text>
+        </svg>
+      </div>
+    </div>
+  </section>
+
+  <!-- 9 SATELLITE SCALE -->
+  <section class="slide">
+    <div class="two">
+      <div class="reveal" style="display:flex;justify-content:center">
+        <svg viewBox="0 0 320 260" width="min(38vw,400px)" class="float">
+          <!-- solar panels -->
+          <rect x="60" y="118" width="70" height="30" fill="#1b3a6b" stroke="#39d6ff" stroke-width="1" opacity=".9"/>
+          <rect x="190" y="118" width="70" height="30" fill="#1b3a6b" stroke="#39d6ff" stroke-width="1" opacity=".9"/>
+          <line x1="130" y1="133" x2="190" y2="133" stroke="#d8dee9" stroke-width="6"/>
+          <rect x="150" y="120" width="20" height="26" rx="3" fill="#d8dee9"/>
+          <rect x="172" y="126" width="14" height="14" rx="2" fill="#aeb8c6"/>
+          <circle cx="160" cy="133" r="70" fill="none" stroke="rgba(255,178,77,.35)" stroke-dasharray="3 5"/>
+          <circle cx="160" cy="133" r="3" fill="#ffb24d" class="pulse"/>
+          <text x="160" y="230" text-anchor="middle" class="mono" fill="#8fa6c2" font-size="11">실제 109 m = 0.000109 unit</text>
+          <text x="160" y="248" text-anchor="middle" class="mono" fill="#ffb24d" font-size="11">→ 절차적 모델로 실루엣만</text>
+        </svg>
+      </div>
+      <div class="reveal">
+        <div class="kicker">문제 해결 · 보이지 않는 것</div>
+        <h2>실축척이면<br><span class="amber">보이지 않는다</span></h2>
+        <p class="sub" style="margin-top:1.1rem;max-width:44ch">ISS는 화면상 서브픽셀이라 아무리 정교한 3D 모델도 소용없다. 그래서 <b class="accent">절차적 모델</b>로 실루엣만 만들고, 실제 자세를 얹었다.</p>
+        <div class="cards2" style="margin-top:1.2rem">
+          <div class="card"><div class="num">ATTITUDE</div><h3>LVLH 자세</h3><p>천저 지향 + 태양전지판 태양 추적.</p></div>
+          <div class="card amberc"><div class="num" style="color:var(--amber)">LOD</div><h3>추적 마커</h3><p>멀면 발광 점, 가까우면 모델. 식(蝕) 중에도 놓치지 않는다.</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 10 KOREA / GK2A -->
+  <section class="slide">
+    <div class="two">
+      <div class="reveal">
+        <div class="kicker">한반도 · 천리안위성 2A호</div>
+        <h2>한반도를 구 위에<br><span class="accent">정확히</span> 얹기</h2>
+        <p class="sub" style="margin-top:1.1rem;max-width:44ch">기상청 GK2A 격자는 <b>Lambert 도법</b>, 구는 <b>등장방형</b>. 좌표계가 달라 그냥 얹으면 한반도가 엉뚱한 곳에 찍힌다.</p>
+        <p class="sub" style="margin-top:1rem;max-width:44ch"><b class="accent">역방향 매핑</b>으로 재투영 — 출력 픽셀마다 경위도를 구해 격자에서 값을 당겨온다. 정지궤도의 2분 간격 관측을 시간 축으로 되짚는다.</p>
+        <div style="margin-top:1.2rem"><span class="pill ok">서울·부산·제주·강릉 0.1° 이내</span><span class="pill">2분 간격 시계열</span></div>
+      </div>
+      <div class="reveal" style="display:flex;justify-content:center">
+        <svg viewBox="0 0 300 300" width="min(34vw,340px)">
+          <circle cx="150" cy="150" r="120" fill="url(#earth)" stroke="rgba(57,214,255,.25)"/>
+          <g opacity=".5" stroke="#2b4a6b" stroke-width=".7" fill="none">
+            <path d="M60 90 h180 M60 130 h180 M60 170 h180 M60 210 h180"/>
+            <path d="M100 60 v190 M150 60 v190 M200 60 v190"/>
+          </g>
+          <!-- korea blob -->
+          <path d="M150 110 q18 6 16 30 q-2 22 10 34 q8 8 2 22 q-14 10 -26 -2 q-10 -14 -6 -34 q2 -30 4 -50 z" fill="rgba(255,178,77,.28)" stroke="#ffb24d" stroke-width="1.4"/>
+          <circle cx="150" cy="128" r="2.4" fill="#39d6ff"/><circle cx="160" cy="176" r="2.4" fill="#39d6ff"/>
+          <text x="150" y="286" text-anchor="middle" class="mono" fill="#5b6f8c" font-size="10">LCC → 등장방형 재투영 · inverse mapping</text>
+        </svg>
+      </div>
+    </div>
+  </section>
+
+  <!-- 11 SECTION REQ2 -->
+  <section class="slide">
+    <div class="reveal" style="text-align:center;width:100%">
+      <div class="sec-tag">요구사항 ②</div>
+      <h1 style="margin:1rem 0">실시간 <span class="accent">항공 트래킹</span></h1>
+      <p class="sub" style="margin:0 auto;max-width:40ch">하늘 위 수천 대를, 끊김 없이.</p>
+      <div class="mono" style="margin-top:1.6rem;color:var(--amber);letter-spacing:.2em">STATUS · 구현 완료 · 실측 ≈ 2,000대</div>
+    </div>
+  </section>
+
+  <!-- 12 DEAD RECKONING -->
+  <section class="slide">
+    <div class="two">
+      <div class="reveal">
+        <div class="kicker">부드러움의 비결</div>
+        <h2>12초마다 오는 신호로<br><span class="accent">60fps</span>를 만든다</h2>
+        <p class="sub" style="margin-top:1.1rem;max-width:44ch">ADS-B 신호는 약 12초 간격인데 항공기는 초속 250m로 난다. 그대로 그리면 마커가 뚝뚝 끊긴다.</p>
+        <p class="sub" style="margin-top:1rem;max-width:44ch">해법은 <b class="accent">추측항법(dead-reckoning)</b> — 마지막 위치·방위·속도로 매 프레임 대권 전진을 계산하고, 다음 신호에서 실측으로 보정한다.</p>
+        <div style="margin-top:1.2rem"><span class="pill">adsb.lol → airplanes.live 폴백</span><span class="pill">7개 허브 팬아웃</span><span class="pill ok">GPU 인스턴싱</span></div>
+      </div>
+      <div class="reveal" style="display:flex;justify-content:center">
+        <svg viewBox="0 0 320 240" width="min(38vw,400px)">
+          <rect x="20" y="20" width="280" height="200" rx="10" fill="rgba(10,20,40,.5)" stroke="var(--line)"/>
+          <g>
+            <g transform="translate(70,150) rotate(35)"><path d="M0,-10 L3,4 L11,8 L3,7 L3,12 L0,11 L-3,12 L-3,7 L-11,8 L-3,4 Z" fill="#d2e6ff"/></g>
+            <g transform="translate(150,100) rotate(60)"><path d="M0,-10 L3,4 L11,8 L3,7 L3,12 L0,11 L-3,12 L-3,7 L-11,8 L-3,4 Z" fill="#5ce1ff"/></g>
+            <g transform="translate(230,140) rotate(-20)"><path d="M0,-10 L3,4 L11,8 L3,7 L3,12 L0,11 L-3,12 L-3,7 L-11,8 L-3,4 Z" fill="#ffb24d"/></g>
+            <g transform="translate(110,70) rotate(100)"><path d="M0,-10 L3,4 L11,8 L3,7 L3,12 L0,11 L-3,12 L-3,7 L-11,8 L-3,4 Z" fill="#d2e6ff"/></g>
+            <g transform="translate(200,190) rotate(15)"><path d="M0,-10 L3,4 L11,8 L3,7 L3,12 L0,11 L-3,12 L-3,7 L-11,8 L-3,4 Z" fill="#8cb4e8"/></g>
+          </g>
+          <path d="M70 150 Q110 120 150 100" stroke="#39d6ff" stroke-dasharray="2 4" fill="none" opacity=".6"/>
+          <text x="160" y="34" text-anchor="middle" class="mono" fill="#39d6ff" font-size="10">LIVE · 1,686 ~ 2,298 AIRCRAFT</text>
+        </svg>
+      </div>
+    </div>
+  </section>
+
+  <!-- 13 DATA FOUNDATION -->
+  <section class="slide">
+    <div class="reveal" style="width:100%">
+      <div class="kicker">토대 · 데이터</div>
+      <h2 style="margin-bottom:.4rem">9개의 <span class="accent">데이터 소스</span> 위에 서다</h2>
+      <p class="sub" style="margin-bottom:1.4rem;max-width:56ch">시각화는 결국 데이터의 신뢰에서 나온다. 각 소스를 실제로 호출해 상태를 확인하고, 실패에 대비한 폴백을 심었다.</p>
+      <div class="cards3" style="grid-template-columns:repeat(3,1fr);gap:.9rem">
+        <div class="card"><div class="num">궤도</div><h3>Space-Track</h3><p>권위 카탈로그 · 90분 갱신 · CelesTrak 차단 시 SatNOGS 폴백</p></div>
+        <div class="card"><div class="num">정밀</div><h3>NASA ISS OEM</h3><p>정밀 ephemeris를 렌더 좌표에 직접 사용</p></div>
+        <div class="card"><div class="num">항공</div><h3>ADS-B ×2</h3><p>adsb.lol · airplanes.live 다중 폴백</p></div>
+        <div class="card"><div class="num">영상</div><h3>NASA GIBS</h3><p>전지구 트루컬러·야간광 텍스처</p></div>
+        <div class="card"><div class="num">산불</div><h3>FIRMS · EONET</h3><p>활성 화재 · 화산 병합</p></div>
+        <div class="card amberc"><div class="num" style="color:var(--amber)">한반도</div><h3>기상청 GK2A</h3><p>정지궤도 2분 간격 관측</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 14 MEASURED NOT ESTIMATED -->
+  <section class="slide">
+    <div class="reveal" style="max-width:64ch">
+      <div class="kicker">일하는 방식 · 검증 문화</div>
+      <p class="big-quote">우리는 <span class="amber">추정하지</span> 않고,<br><span class="accent">측정</span>했다.</p>
+      <div class="divider"></div>
+      <p class="sub" style="max-width:56ch">자체 구현한 수학은 반드시 <b>독립 기준 구현</b>과 수치 대조했다. 심지어 검증 도구 자체의 오차까지 잡아냈다. 한 예로, "수치적분으로 오차 100m 이하"라는 <b>원안의 전제가 실측으로 반증</b>되자, 불필요한 서비스를 만들지 않기로 판단했다 — 거짓 정밀도를 만드느니 정직한 한계를 택했다.</p>
+      <div style="margin-top:1.4rem">
+        <span class="pill ok">SGP4 골든벡터 &lt;10 m</span>
+        <span class="pill ok">좌표 프레임 0.8 m</span>
+        <span class="pill ok">LCC 0.1 m</span>
+        <span class="pill ok">가시성 6/6 일치</span>
+        <span class="pill ok">FIRMS 완전 일치</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 15 EVIDENCE / CITATIONS -->
+  <section class="slide">
+    <div class="two">
+      <div class="reveal">
+        <div class="kicker">근거로 지은 프로젝트</div>
+        <h2>모든 구현에는<br><span class="accent">출처</span>가 있다</h2>
+        <p class="sub" style="margin-top:1.1rem;max-width:44ch">기술 선택마다 학술·표준 근거를 명시했다. 그리고 "논문 기반"이라 적으면서 서지가 틀리면 문서 자체의 신뢰가 무너지므로, <b class="accent">인용의 저자·제목·게재지·DOI를 웹으로 실제 교차 검증</b>했다.</p>
+        <p class="sub" style="margin-top:1rem;max-width:44ch">검증 중 두 건을 정정했다 — CCSDS OEM 최신판(-B-3, 2023), VIIRS 논문 권/페이지 보완.</p>
+      </div>
+      <div class="reveal">
+        <div class="flow">
+          <div class="step"><div class="idx">SGP4</div><div><h3>Vallado et al. 2006</h3><p>Revisiting Spacetrack Report #3 · DOI 10.2514/6.2006-6753</p></div></div>
+          <div class="step"><div class="idx">FRAME</div><div><h3>Seidelmann 1982</h3><p>IAU 1980 Nutation · Celestial Mechanics 27</p></div></div>
+          <div class="step"><div class="idx">FIRE</div><div><h3>Giglio 2003 · Schroeder 2014</h3><p>MODIS / VIIRS 375m 화재 탐지 · RSE</p></div></div>
+          <div class="step"><div class="idx">VLM</div><div><h3>GeoChat · CVPR 2024</h3><p>원격탐사 특화 모델 · arXiv:2311.15826</p></div></div>
+        </div>
+        <p class="mono sub" style="margin-top:.9rem;color:var(--faint);font-size:.76rem">전 항목 2026-07 웹 조사로 교차 검증</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 16 INTELLIGENCE now/next -->
+  <section class="slide">
+    <div class="reveal" style="width:100%">
+      <div class="kicker">지능 계층 · 지금, 그리고 다음</div>
+      <h2 style="margin-bottom:1.2rem">동작한다 — 그리고 <span class="amber">정직하게</span> 남은 길을 안다</h2>
+      <div class="cards3">
+        <div class="card"><div class="num">에이전트</div><h3>지금: 규칙 기반</h3><p>소형 모델의 도구선택 변동성을 결정론적 그라운딩으로 보정. 좌표는 시스템이 만들어 환각 차단.</p><div style="margin-top:.6rem"><span class="pill">→ deepagents 전환</span></div></div>
+        <div class="card"><div class="num">RAG</div><h3>지금: 14청크</h3><p>궤도역학 Q&A 수준. 기동 감지 결과 자동 서술화로 확장 예정.</p><div style="margin-top:.6rem"><span class="pill">→ 대규모 궤도 RAG</span></div></div>
+        <div class="card amberc"><div class="num" style="color:var(--amber)">VLM · 정직한 기록</div><h3>파이프라인 정상, 모델 부적합</h3><p>범용 모델이 캘리포니아 화재를 "눈 덮인 산"으로 오독. <b>교체 지점은 환경변수 한 곳.</b></p><div style="margin-top:.6rem"><span class="pill warn">→ GeoChat</span></div></div>
+      </div>
+      <p class="sub" style="margin-top:1.3rem;max-width:66ch">이 전환들은 모두 <b class="accent">기존 구조 위에 얹는 방식</b>이라 되돌리기 쉬운 순서로 진행할 수 있다. 실패해도 손실이 작다.</p>
+    </div>
+  </section>
+
+  <!-- 17 NUMBERS -->
+  <section class="slide">
+    <div class="reveal" style="width:100%">
+      <div class="kicker">숫자로 보는 완성도</div>
+      <h2 style="margin-bottom:1.4rem">지금까지 지은 것</h2>
+      <div class="stats">
+        <div class="stat"><div class="v">33</div><div class="l">라이브러리 모듈 · 약 5,200행</div></div>
+        <div class="stat"><div class="v">14</div><div class="l">API 라우트</div></div>
+        <div class="stat"><div class="v a">100+</div><div class="l">자동화 테스트 (9개 파일)</div></div>
+        <div class="stat"><div class="v">9</div><div class="l">외부 데이터 소스</div></div>
+      </div>
+      <div class="stats" style="margin-top:1rem">
+        <div class="stat"><div class="v">3</div><div class="l">구형 시각화 층위 (A·B·C)</div></div>
+        <div class="stat"><div class="v a">≈2,000</div><div class="l">동시 표시 항공기</div></div>
+        <div class="stat"><div class="v">0.68<span style="font-size:1rem"> km</span></div><div class="l">SGP4 실측 오차 (정량화)</div></div>
+        <div class="stat"><div class="v a">11</div><div class="l">검증 완료 학술 인용</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 18 CLOSE -->
+  <section class="slide">
+    <div class="two">
+      <div class="reveal">
+        <div class="kicker">맺음 · 다음 국면</div>
+        <h2 style="max-width:20ch">견고한 <span class="accent">토대</span> 위에,<br>지능을 <span class="amber">정렬</span>한다</h2>
+        <p class="sub" style="margin-top:1.2rem;max-width:46ch">두 요구사항 — 구형 시각화와 항공 트래킹 — 은 구현이 완료되었고, 코드 대조로 확인했다. 그 아래 데이터 계층은 실측으로, 학술 근거는 검증으로 다졌다.</p>
+        <p class="sub" style="margin-top:1rem;max-width:46ch">남은 여정은 명확하다. 시각화·데이터의 토대 위에 <b class="accent">지능 계층을 정렬</b>하는 단계 — 그것이 이 프로젝트의 다음 국면이다.</p>
+      </div>
+      <div class="reveal" style="display:flex;justify-content:center;align-items:center">
+        <svg viewBox="0 0 360 360" width="min(40vw,420px)" class="float">
+          <circle cx="180" cy="180" r="150" fill="url(#atmo)"/>
+          <circle cx="180" cy="180" r="110" fill="url(#earth)" stroke="rgba(57,214,255,.3)"/>
+          <g class="spin-r" fill="none">
+            <ellipse cx="180" cy="180" rx="150" ry="60" transform="rotate(26 180 180)" stroke="url(#ring)" stroke-width="2.4"/>
+            <ellipse cx="180" cy="180" rx="132" ry="108" transform="rotate(-16 180 180)" stroke="#39d6ff" stroke-width="1.4" opacity=".5"/>
+          </g>
+          <circle cx="330" cy="180" r="5" fill="#ffb24d" class="pulse"/>
+          <text x="180" y="335" text-anchor="middle" class="mono" fill="#5b6f8c" font-size="11">THANK YOU · ORBITAL COMMAND</text>
+        </svg>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<script>
+(function(){
+  // starfield
+  const cv=document.getElementById('stars'),cx=cv.getContext('2d');let W,H,stars=[];
+  function rs(){W=cv.width=innerWidth;H=cv.height=innerHeight;stars=[];const n=Math.min(220,Math.floor(W*H/9000));
+    for(let i=0;i<n;i++)stars.push({x:Math.random()*W,y:Math.random()*H,z:Math.random()*.8+.2,p:Math.random()*Math.PI*2});}
+  rs();addEventListener('resize',rs);
+  function draw(t){cx.clearRect(0,0,W,H);for(const s of stars){const tw=.5+.5*Math.sin(t/900+s.p);
+    cx.globalAlpha=(.15+.55*tw)*s.z;cx.fillStyle=s.z>.7?'#bfe6ff':'#7fa8d8';
+    cx.beginPath();cx.arc(s.x,s.y,s.z*1.3,0,7);cx.fill();}cx.globalAlpha=1;requestAnimationFrame(draw);}
+  requestAnimationFrame(draw);
+
+  const slides=[...document.querySelectorAll('.slide')];let i=0;
+  const dots=document.getElementById('dots'),prog=document.getElementById('prog'),pageno=document.getElementById('pageno');
+  slides.forEach((_,k)=>{const d=document.createElement('div');d.className='dot';d.onclick=()=>go(k);dots.appendChild(d);});
+  const dotEls=[...dots.children];
+  function go(n){n=Math.max(0,Math.min(slides.length-1,n));
+    slides[i].classList.remove('active');slides[i].classList.toggle('prev',n>i);
+    i=n;slides[i].classList.add('active');slides[i].classList.remove('prev');
+    dotEls.forEach((d,k)=>d.classList.toggle('on',k===i));
+    prog.style.width=((i+1)/slides.length*100)+'%';
+    pageno.textContent=String(i+1).padStart(2,'0');}
+  function next(){go(i+1)}function prev(){go(i-1)}
+  addEventListener('keydown',e=>{
+    if(['ArrowRight','ArrowDown',' ','PageDown'].includes(e.key)){e.preventDefault();next();}
+    else if(['ArrowLeft','ArrowUp','PageUp'].includes(e.key)){e.preventDefault();prev();}
+    else if(e.key==='Home')go(0);else if(e.key==='End')go(slides.length-1);});
+  // touch
+  let sx=0;addEventListener('touchstart',e=>sx=e.touches[0].clientX,{passive:true});
+  addEventListener('touchend',e=>{const dx=e.changedTouches[0].clientX-sx;if(Math.abs(dx)>50)dx<0?next():prev();},{passive:true});
+  // click zones
+  document.getElementById('deck').addEventListener('click',e=>{if(e.target.closest('a,.dot'))return;
+    (e.clientX>innerWidth*.5)?next():prev();});
+  // clock telemetry
+  setInterval(()=>{const d=new Date();document.getElementById('clock').textContent='T '+d.toLocaleTimeString('en-GB');},1000);
+  go(0);
+})();
+</script>
+</body>
+</html>

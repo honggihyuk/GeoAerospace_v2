@@ -13,12 +13,12 @@ export async function GET(req: Request) {
     : SATELLITES.map((s) => s.noradId);
 
   try {
-    const { sats, source } = await fetchTleByIds(ids);
+    const { sats, source, bySource } = await fetchTleByIds(ids);
     if (sats.length === 0) {
       // 전 소스 실패 → 데모 세트로 폴백(HTTP 200, 클라 표기 'demo')
       return NextResponse.json({ sats: SATELLITES, source: "demo", fetchedAt: Date.now() });
     }
-    return NextResponse.json({ sats, source, fetchedAt: Date.now() });
+    return NextResponse.json({ sats, source, bySource, fetchedAt: Date.now() });
   } catch (e) {
     return NextResponse.json({ sats: SATELLITES, source: "demo", error: String(e), fetchedAt: Date.now() });
   }

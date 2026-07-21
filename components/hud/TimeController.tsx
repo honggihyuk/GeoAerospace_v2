@@ -24,14 +24,18 @@ export default function TimeController() {
   const [rate, setRate] = useState(1);
   const [paused, setPaused] = useState(false);
   const [tick, setTick] = useState(0);
+  // 시계는 마운트 후에만 그린다. 렌더 중 simClock을 읽으면 SSR 시각과 하이드레이션
+  // 시각이 1초 어긋나 hydration mismatch가 난다(TopBar와 동일한 패턴).
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
+    setMounted(true);
     const id = setInterval(() => setTick((t) => t + 1), 500);
     return () => clearInterval(id);
   }, []);
 
-  const offset = simClock.offsetMs();
-  const live = Math.abs(offset) < 2000 && rate === 1 && !paused;
+  const offset = mounted ? simClock.offsetMs() : 0;
+  const live = mounted ? Math.abs(offset) < 2000 && rate === 1 && !paused : true;
 
   return (
     <div className="glass" style={S.wrap}>
@@ -62,7 +66,7 @@ export default function TimeController() {
       </button>
 
       <div style={S.readout}>
-        <span className="mono" style={{ color: "var(--cyan)" }}>{simUtc()} UTC</span>
+        <span className="mono" style={{ color: "var(--cyan)" }}>{mounted ? simUtc() : "--:--:--"} UTC</span>
         <span className="mono" style={{ color: live ? "var(--ok)" : "var(--amber)", fontSize: 10 }}>
           {live ? "● LIVE" : fmtOffset(offset)}
         </span>
