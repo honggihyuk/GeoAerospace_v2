@@ -37,7 +37,6 @@ export default function LayerRail() {
 
   const items: { k: Key; label: string; hint: string }[] = [
     { k: "orbits", label: "궤도 링", hint: "SGP4" },
-    { k: "groundTracks", label: "지상궤적", hint: "TRACK" },
     { k: "satellites", label: "위성", hint: String(satCount) },
     { k: "aircraft", label: "항공기", hint: aircraftCount ? aircraftCount.toLocaleString() : "…" },
     { k: "terrain", label: "3D 지형", hint: "DEM" },

@@ -16,6 +16,8 @@ export default function TopBar() {
   const [cmd, setCmd] = useState("");
   const busy = useStore((s) => s.agentBusy);
   const tleSource = useStore((s) => s.tleSource);
+  const geoscanOverlayOpen = useStore((s) => s.geoscanOverlayOpen);
+  const setGeoscanOverlayOpen = useStore((s) => s.setGeoscanOverlayOpen);
   // 일부라도 데모/스테일이 섞이면 LIVE라고 하지 않는다 (고도화 §A4 정직성).
   // 이전 구현은 첫 위성의 소스만 보고 태깅해 절반이 744일 데모여도 LIVE로 표시했다.
   const degraded = tleSource.includes("demo") || tleSource.includes("stale");
@@ -90,6 +92,20 @@ export default function TopBar() {
             </span>
           </span>
         )}
+        {view === "space" && (
+          <button
+            type="button"
+            onClick={() => setGeoscanOverlayOpen(!geoscanOverlayOpen)}
+            style={{ ...S.toggle, ...(geoscanOverlayOpen ? S.toggleOn : {}) }}
+            aria-pressed={geoscanOverlayOpen}
+            title="Geoscan 16U Sketchfab 오버레이 토글"
+          >
+            <span style={{ color: "var(--faint)" }}>16U</span>
+            <span className="mono" style={{ color: geoscanOverlayOpen ? "var(--cyan)" : "var(--muted)" }}>
+              {geoscanOverlayOpen ? "ON" : "OFF"}
+            </span>
+          </button>
+        )}
         <span className="mono" style={S.clock}>
           {clock}
         </span>
@@ -141,6 +157,20 @@ const S: Record<string, React.CSSProperties> = {
   kbd: { fontFamily: "var(--mono)", fontSize: 10, color: "var(--faint)", border: "1px solid var(--grid)", borderRadius: 4, padding: "1px 5px" },
   status: { display: "flex", alignItems: "center", gap: 16, marginLeft: "auto", pointerEvents: "auto" },
   chip: { display: "flex", alignItems: "center", gap: 7, fontSize: 11 },
+  toggle: {
+    display: "flex",
+    alignItems: "center",
+    gap: 7,
+    fontSize: 11,
+    background: "rgba(10,17,32,0.68)",
+    border: "1px solid var(--grid)",
+    borderRadius: 999,
+    padding: "5px 10px",
+    color: "var(--muted)",
+    cursor: "pointer",
+    pointerEvents: "auto",
+  },
+  toggleOn: { borderColor: "rgba(92,225,255,0.5)", boxShadow: "0 0 0 1px rgba(92,225,255,0.12) inset" },
   dot: { width: 7, height: 7, borderRadius: "50%", background: "var(--ok)", boxShadow: "0 0 8px var(--ok)" },
   clock: { fontSize: 13, color: "var(--cyan)", letterSpacing: "0.04em" },
 };

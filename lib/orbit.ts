@@ -36,19 +36,34 @@ export function computeOrbit(def: SatDef, now = new Date(), steps = 180): OrbitD
   let seg: [number, number][] = [];
   let prevLon: number | null = null;
 
+  // 궤도 링 = "순간 궤도 타원": 한 주기 관성계(ECI) 형상을 now 하나의 GMST 로만 회전한다.
+  // → 시작·끝이 만나는 닫힌 타원(SpaceView 의 관성계 궤도와 같은 외형).
+  // 각 점을 제 시각의 GMST 로 지오코딩하면 지구자전 세차가 섞여 열린 나선이 된다 —
+  // 그건 "지상궤적(track)"의 몫이다. track 은 실제 지표 자취라 세차가 반영돼야 옳다.
+  const gmst0 = satellite.gstime(now);
+
   for (let i = 0; i <= steps; i++) {
     const t = new Date(now.getTime() + (i / steps) * periodMin * 60_000);
-    const p = eciToLonLatAlt(satrec, t);
-    if (!p) continue;
-    const [lon, lat, alt] = p;
-    ring.push([lon, lat, alt]);
-    // 지상궤적: 자오선(±180°) 교차 시 세그먼트 분할
-    if (prevLon !== null && Math.abs(lon - prevLon) > 180) {
+    const pv = satellite.propagate(satrec, t);
+    if (!pv || !pv.position || typeof pv.position === "boolean") continue;
+
+    // 링: 고정 GMST(now) → 순간 타원(관성계 형상, 닫힘)
+    const gi = satellite.eciToGeodetic(pv.position, gmst0);
+    const lonI = satellite.degreesLong(gi.longitude);
+    const latI = satellite.degreesLat(gi.latitude);
+    if (!Number.isNaN(lonI) && !Number.isNaN(latI)) ring.push([lonI, latI, gi.height * 1000]);
+
+    // 지상궤적: 각 점의 실제 시각 GMST → 실제 지표 자취(세차 반영), 자오선 교차 시 분할
+    const gt = satellite.eciToGeodetic(pv.position, satellite.gstime(t));
+    const lonT = satellite.degreesLong(gt.longitude);
+    const latT = satellite.degreesLat(gt.latitude);
+    if (Number.isNaN(lonT) || Number.isNaN(latT)) continue;
+    if (prevLon !== null && Math.abs(lonT - prevLon) > 180) {
       if (seg.length > 1) track.push(seg);
       seg = [];
     }
-    seg.push([lon, lat]);
-    prevLon = lon;
+    seg.push([lonT, latT]);
+    prevLon = lonT;
   }
   if (seg.length > 1) track.push(seg);
   if (ring.length < 8) return null;

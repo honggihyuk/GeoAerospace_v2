@@ -1,35 +1,41 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import maplibregl, { type StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { MapboxOverlay } from "@deck.gl/mapbox";
-import { PathLayer, ScatterplotLayer, IconLayer } from "@deck.gl/layers";
+import { ScatterplotLayer, IconLayer } from "@deck.gl/layers";
 import { computeOrbit, currentPosition, type OrbitData } from "@/lib/orbit";
 import { useStore } from "@/lib/store";
 import { loadAircraft, deadReckon, makePlaneIcon, AC_COLOR, type AircraftSnapshot } from "@/lib/aircraft";
-import { createOrbitalLayer, type SatView } from "@/lib/three/orbitalLayer";
+import { createOrbitalLayer, type SatView, type OrbitRing, type SatHit } from "@/lib/three/orbitalLayer";
+import { KOREA_BBOX, KOREA_CENTER, GRID_NX, GRID_NY, cellLngLat, elevationColor, type KoreaGrid } from "@/lib/koreaCube";
 import { mapBus } from "@/lib/mapBus";
 import { simClock } from "@/lib/simClock";
 import { useFiresLayer } from "@/lib/firesClient";
 import { findGibsLayer, gibsTileUrl } from "@/lib/gibs";
 import type { FirePoint } from "@/lib/store";
 
-// --- 다크 글로브 스타일 (오픈·토큰프리: CARTO dark + AWS Terrarium DEM) ---
+// --- 글로브 스타일 (오픈·토큰프리: EOX Sentinel-2 Cloudless + AWS Terrarium DEM) ---
+// 베이스맵 = EOX s2cloudless: 1년치 Sentinel-2 관측을 합성해 **구름을 제거한** 10 m급 트루컬러.
+// BlueMarble(≈500 m)보다 훨씬 정밀해 도시·해안·지형 질감이 또렷하다. 정적 합성이라 궤도 스와스·
+// 구름 이음매가 없다. DEM(terrain)에 드레이프되어 3D 기복도 함께 드러난다.
+// ⚠️ EOX 타일은 비상업·저부하 용도 무료 — 대량 트래픽은 https://maps.eox.at 유료 플랜 필요.
+const GIBS_WMTS = "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best";
 const STYLE: StyleSpecification = {
   version: 8,
   projection: { type: "globe" },
   glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
   sources: {
-    carto: {
+    basemap: {
       type: "raster",
-      tiles: [
-        "https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
-        "https://b.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
-        "https://c.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
-      ],
+      // EOX Maps WMTS(EPSG:3857, TileMatrixSet 'g'). s2cloudless-2023 = 최신 무구름 합성.
+      // {z}/{y}/{x} = TileMatrix/TileRow/TileCol. 약 zoom 14(≈10 m)까지 유효.
+      tiles: ["https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2023_3857/default/g/{z}/{y}/{x}.jpg"],
       tileSize: 256,
-      attribution: "© CARTO © OpenStreetMap · DEM: AWS Terrain Tiles · ADS-B: adsb.lol/airplanes.live",
+      maxzoom: 14,
+      attribution:
+        'Sentinel-2 cloudless 2023 (<a href="https://s2maps.eu">s2maps.eu</a>) by EOX — modified Copernicus data · DEM: AWS Terrain Tiles · ADS-B: adsb.lol/airplanes.live',
     },
     terrain: {
       type: "raster-dem",
@@ -41,7 +47,7 @@ const STYLE: StyleSpecification = {
   },
   layers: [
     { id: "space", type: "background", paint: { "background-color": "#05070f" } },
-    { id: "carto", type: "raster", source: "carto", paint: { "raster-opacity": 0.92 } },
+    { id: "basemap", type: "raster", source: "basemap" },
   ],
 };
 
@@ -61,9 +67,12 @@ export default function MapCanvas() {
   const overlayRef = useRef<MapboxOverlay | null>(null);
   const acRef = useRef<AircraftSnapshot>({ data: [], source: "—", fetchedAt: Date.now() });
   const satViewRef = useRef<SatView[]>([]);
+  const orbitViewRef = useRef<OrbitRing[]>([]);
+  const orbitsRef = useRef<OrbitData[]>([]); // 시뮬 시각 기준으로 주기 재계산되는 궤도(링/지상궤적/satrec)
+  const koreaGridRef = useRef<KoreaGrid | null>(null); // 큐브샛 더블클릭 관측 → 한반도 큐브 그리드
+  const satHitsRef = useRef<SatHit[]>([]); // orbitalLayer가 매 프레임 채우는 위성 화면좌표(클릭 피킹용)
   const iconRef = useRef<{ url: string; width: number; height: number; anchorX: number; anchorY: number; mask: boolean } | null>(null);
   const select = useStore((s) => s.select);
-  const sats = useStore((s) => s.sats);
   const [pickedFire, setPickedFire] = useState<FirePoint | null>(null);
   useFiresLayer(); // 레이어를 켤 때 1회 지연 로딩 (§4.8-A)
 
@@ -93,11 +102,9 @@ export default function MapCanvas() {
     };
   }, []);
 
-  // 궤도 계산 — TLE 변경 시 재계산 (§7.4)
-  const orbits = useMemo<OrbitData[]>(() => {
-    const now = new Date();
-    return sats.map((d) => computeOrbit(d, now)).filter((o): o is OrbitData => o !== null);
-  }, [sats]);
+  // 궤도(링/지상궤적)는 아래 렌더 루프에서 **시뮬 시각 기준**으로 주기 재계산한다(§7.4).
+  // ECEF 링은 지구자전으로 세차하므로 실시간(new Date())에 한 번 얼려두면 마커와 어긋난다 —
+  // 배속/스크럽/일시정지에서도 정합하려면 simClock 기준 재계산이 필수다.
 
   // 지도 초기화
   useEffect(() => {
@@ -134,15 +141,156 @@ export default function MapCanvas() {
       } catch {
         /* noop */
       }
-      // Three.js 3D 위성·센서 콘 custom layer (§4.6-A). globe 미지원 시 render()가 자체 skip.
+      // Three.js 3D 위성·센서 콘 + 실축척 궤도링(ECEF) custom layer (§4.6-A).
+      // globe 미지원 시 render()가 자체 skip. 궤도링은 deck.gl 에서 이관 — 깊이 구로 뒤편이 가려진다.
       try {
-        map.addLayer(createOrbitalLayer(() => (useStore.getState().layers.satellites ? satViewRef.current : [])));
+        map.addLayer(
+          createOrbitalLayer(
+            () => (useStore.getState().layers.satellites ? satViewRef.current : []),
+            () => (useStore.getState().layers.orbits ? orbitViewRef.current : []),
+            () => koreaGridRef.current,
+            satHitsRef.current
+          )
+        );
       } catch {
         /* noop */
       }
     });
 
+    // ── 큐브샛 더블클릭 → 한반도 "큐브 관측" ──────────────────────────────────
+    // 높이: Copernicus DEM(Sentinel Hub) raster → 캐시(폴백 Terrarium). 표면 색: 우상단 토글.
+    //   ortho=VWorld 정사영상, dem=고도색, sar=Sentinel-1 후방산란.
+    const N = GRID_NX * GRID_NY;
+    let heightsCache: Float32Array | null = null;
+
+    const bmpToData = async (blob: Blob): Promise<{ data: Uint8ClampedArray; w: number; h: number } | null> => {
+      const bmp = await createImageBitmap(blob);
+      const cv = document.createElement("canvas");
+      cv.width = bmp.width;
+      cv.height = bmp.height;
+      const ctx = cv.getContext("2d");
+      if (!ctx) {
+        bmp.close();
+        return null;
+      }
+      ctx.drawImage(bmp, 0, 0);
+      const data = ctx.getImageData(0, 0, bmp.width, bmp.height).data;
+      const out = { data, w: bmp.width, h: bmp.height };
+      bmp.close();
+      return out;
+    };
+
+    // 셀(x,y) → 이미지 픽셀 RGBA 오프셋. 이미지 y는 위가 북.
+    const sampleIdx = (x: number, y: number, iw: number, ih: number) => {
+      const px = Math.min(iw - 1, Math.floor(((x + 0.5) / GRID_NX) * iw));
+      const py = Math.min(ih - 1, Math.floor((1 - (y + 0.5) / GRID_NY) * ih));
+      return (py * iw + px) * 4;
+    };
+
+    // 높이 관측: Terrarium 30m DEM(queryTerrainElevation) 셀별 샘플.
+    // (Copernicus DEM GLO-30/90 은 남한이 정부 제한으로 CDSE 미제공 nodata — 확인됨. Terrarium 사용.)
+    const observeKorea = () => {
+      const heights = new Float32Array(N);
+      for (let y = 0; y < GRID_NY; y++)
+        for (let x = 0; x < GRID_NX; x++) {
+          const [lng, lat] = cellLngLat(x, y);
+          heights[y * GRID_NX + x] = (map.queryTerrainElevation([lng, lat]) ?? 0) / 1.25; // 과장(1.25) 되돌림
+        }
+      heightsCache = heights;
+    };
+
+    // 표면 색 적용: 즉시 고도색 → 선택 소스(ortho/sar) 도착 시 교체.
+    const applySurface = async () => {
+      const heights = heightsCache;
+      if (!heights) return;
+      const elev = new Uint8Array(N * 3);
+      for (let i = 0; i < N; i++) {
+        const [r, g, b] = elevationColor(heights[i]);
+        elev[i * 3] = r;
+        elev[i * 3 + 1] = g;
+        elev[i * 3 + 2] = b;
+      }
+      koreaGridRef.current = { bbox: { ...KOREA_BBOX }, nx: GRID_NX, ny: GRID_NY, heights, colors: elev };
+      map.triggerRepaint();
+
+      const surface = useStore.getState().cube.surface;
+      if (surface === "dem") return; // 고도색이 곧 DEM 표현
+      const { west, south, east, north } = KOREA_BBOX;
+      const url =
+        surface === "ortho"
+          ? `/api/vworld?bbox=${west},${south},${east},${north}&w=512`
+          : `/api/sar?bbox=${west},${south},${east},${north}&w=512`;
+      try {
+        const res = await fetch(url);
+        if (!res.ok) return; // 미설정/실패 → 고도색 유지
+        const img = await bmpToData(await res.blob());
+        if (!img) return;
+        const st = useStore.getState();
+        if (!st.cube.active || st.cube.surface !== surface) return; // 레이스: 그새 바뀜
+        const colors = new Uint8Array(N * 3);
+        for (let y = 0; y < GRID_NY; y++)
+          for (let x = 0; x < GRID_NX; x++) {
+            const o = sampleIdx(x, y, img.w, img.h);
+            const i = y * GRID_NX + x;
+            if (surface === "ortho") {
+              colors[i * 3] = img.data[o]; // 정사영상 실제 RGB
+              colors[i * 3 + 1] = img.data[o + 1];
+              colors[i * 3 + 2] = img.data[o + 2];
+            } else {
+              const g = img.data[o]; // SAR 후방산란 → 따뜻한 회색조
+              colors[i * 3] = g;
+              colors[i * 3 + 1] = Math.round(g * 0.92);
+              colors[i * 3 + 2] = Math.round(g * 0.78);
+            }
+          }
+        koreaGridRef.current = { bbox: { ...KOREA_BBOX }, nx: GRID_NX, ny: GRID_NY, heights, colors };
+        map.triggerRepaint();
+      } catch {
+        /* 실패 → 고도색 유지 */
+      }
+    };
+
+    map.on("dblclick", (e) => {
+      const p = map.project(KOREA_CENTER as [number, number]);
+      if (Math.hypot(e.point.x - p.x, e.point.y - p.y) > 70) return; // 큐브샛 근처만
+      e.preventDefault(); // 더블클릭 기본 줌 방지
+      const st = useStore.getState();
+      const next = !st.cube.active;
+      st.setCubeActive(next);
+      if (next) {
+        map.flyTo({ center: KOREA_CENTER as [number, number], zoom: 4.6, pitch: 45, speed: 1.1, essential: true });
+        map.once("idle", () => {
+          observeKorea();
+          void applySurface();
+        });
+      } else {
+        heightsCache = null;
+        koreaGridRef.current = null;
+        map.triggerRepaint();
+      }
+    });
+
+    // 위성 클릭 선택 — Three 레이어가 채운 정확 화면좌표(satHitsRef)로 최근접 피킹(pitch 무관).
+    map.on("click", (e) => {
+      let best: number | null = null;
+      let bd = 16; // px 임계
+      for (const h of satHitsRef.current) {
+        const d = Math.hypot(e.point.x - h.x, e.point.y - h.y);
+        if (d < bd) {
+          bd = d;
+          best = h.norad;
+        }
+      }
+      if (best != null) select(best);
+    });
+
+    // 우상단 표면 토글 변경 → 높이 재사용하며 재색칠(관측 활성 중)
+    const unsubCube = useStore.subscribe((s, prev) => {
+      if (s.cube.surface !== prev.cube.surface && s.cube.active) void applySurface();
+    });
+
     return () => {
+      unsubCube();
       mapBus.set(null);
       map.remove();
       mapRef.current = null;
@@ -182,8 +330,8 @@ export default function MapCanvas() {
       // 베이스맵 바로 위에 넣는다. 그냥 addLayer하면 맨 위로 가서
       // 산불 포인트·위성 마커를 덮어버린다.
       const layers = map.getStyle().layers ?? [];
-      const cartoIdx = layers.findIndex((l) => l.id === "carto");
-      const beforeId = cartoIdx >= 0 ? layers[cartoIdx + 1]?.id : undefined;
+      const baseIdx = layers.findIndex((l) => l.id === "basemap");
+      const beforeId = baseIdx >= 0 ? layers[baseIdx + 1]?.id : undefined;
       map.addLayer(
         { id: LYR, type: "raster", source: SRC, paint: { "raster-opacity": gibs.opacity } },
         beforeId
@@ -211,13 +359,35 @@ export default function MapCanvas() {
     const overlay = overlayRef.current;
     if (!overlay) return;
 
+    // ECEF 궤도링/지상궤적은 지구자전으로 세차 → 시뮬 시각이 임계만큼 흐르면 다시 계산한다.
+    // 임계는 시뮬 시간 기준이라 배속일수록 실시간상 더 자주 갱신되어 마커와 계속 정합한다.
+    const RING_REFRESH_SIM_MS = 3000;
+    let ringSats: unknown = null; // TLE(sats) 교체 감지
+    let lastRingSimMs = Number.NEGATIVE_INFINITY;
+    let lastSel: number | null = null;
+
     const build = () => {
       const st = useStore.getState();
       const now = simClock.nowDate(); // 위성 전파는 가상 시계 기준(배속/스크럽)
+      const nowMs = now.getTime();
       const sel = st.selectedNorad;
 
-      const orbitData = orbits.map((o) => ({ path: o.ring, color: o.def.color, sel: o.def.noradId === sel }));
-      const groundData = orbits.flatMap((o) => o.track.map((seg) => ({ path: seg, color: o.def.color })));
+      // 링/지상궤적 재계산(비싼 SGP4 180스텝×위성수)은 임계 초과 또는 TLE 교체 시에만.
+      const recomputed = st.sats !== ringSats || Math.abs(nowMs - lastRingSimMs) > RING_REFRESH_SIM_MS;
+      if (recomputed) {
+        ringSats = st.sats;
+        lastRingSimMs = nowMs;
+        orbitsRef.current = st.sats.map((d) => computeOrbit(d, now)).filter((o): o is OrbitData => o !== null);
+      }
+      const orbits = orbitsRef.current;
+
+      // Three 링 뷰 배열은 재계산 또는 선택 변경 때만 새로 만든다 — 매 프레임 새 배열이면
+      // custom layer 가 참조 변화로 오판해 매 프레임 getMatrixForModel 재구성을 돈다(비쌈).
+      if (recomputed || sel !== lastSel) {
+        lastSel = sel;
+        orbitViewRef.current = orbits.map((o) => ({ points: o.ring, color: o.def.color, sel: o.def.noradId === sel }));
+      }
+
       const satData = orbits
         .map((o) => {
           const p = currentPosition(o.satrec, now);
@@ -226,44 +396,13 @@ export default function MapCanvas() {
         .filter(Boolean) as { pos: [number, number, number]; color: [number, number, number]; norad: number; sel: boolean }[];
 
       // Three.js 레이어용 위성 뷰 갱신 (§4.6-A)
-      satViewRef.current = satData.map((s) => ({ lng: s.pos[0], lat: s.pos[1], alt: s.pos[2], color: s.color, sel: s.sel }));
+      satViewRef.current = satData.map((s) => ({ norad: s.norad, lng: s.pos[0], lat: s.pos[1], alt: s.pos[2], color: s.color, sel: s.sel }));
 
       const acData = st.layers.aircraft && iconRef.current ? deadReckon(acRef.current, Date.now()) : [];
 
       overlay.setProps({
         layers: [
-          st.layers.groundTracks &&
-            new PathLayer({
-              id: "ground-tracks",
-              data: groundData,
-              getPath: (d: { path: [number, number][] }) => d.path,
-              getColor: (d: { color: [number, number, number] }) => [...d.color, 90] as [number, number, number, number],
-              getWidth: 1.5,
-              widthUnits: "pixels",
-              widthMinPixels: 1,
-              parameters: { depthTest: false },
-            }),
-          st.layers.orbits &&
-            new PathLayer({
-              id: "orbit-glow",
-              data: orbitData,
-              getPath: (d: { path: number[][] }) => d.path,
-              getColor: (d: { color: [number, number, number]; sel: boolean }) => [...d.color, d.sel ? 70 : 40] as [number, number, number, number],
-              getWidth: (d: { sel: boolean }) => (d.sel ? 7 : 5),
-              widthUnits: "pixels",
-              parameters: { depthTest: false },
-            }),
-          st.layers.orbits &&
-            new PathLayer({
-              id: "orbit-core",
-              data: orbitData,
-              getPath: (d: { path: number[][] }) => d.path,
-              getColor: (d: { color: [number, number, number]; sel: boolean }) => [...d.color, d.sel ? 255 : 190] as [number, number, number, number],
-              getWidth: (d: { sel: boolean }) => (d.sel ? 2 : 1.4),
-              widthUnits: "pixels",
-              widthMinPixels: 1,
-              parameters: { depthTest: false },
-            }),
+          // 지상궤적 레이어 제거됨(요청). 궤도링·위성은 Three.js custom layer(orbital-3d) 담당.
           st.layers.aircraft &&
             iconRef.current &&
             new IconLayer({
@@ -296,23 +435,8 @@ export default function MapCanvas() {
               onClick: (info: { object?: FirePoint }) => info.object && setPickedFire(info.object),
               parameters: { depthTest: false },
             }),
-          st.layers.satellites &&
-            new ScatterplotLayer({
-              id: "satellites",
-              data: satData,
-              getPosition: (d: { pos: [number, number, number] }) => d.pos,
-              getFillColor: (d: { color: [number, number, number] }) => [...d.color, 255] as [number, number, number, number],
-              getRadius: (d: { sel: boolean }) => (d.sel ? 5 : 3.2),
-              radiusUnits: "pixels",
-              radiusMinPixels: 2.5,
-              stroked: true,
-              getLineColor: [255, 255, 255, 160],
-              lineWidthUnits: "pixels",
-              getLineWidth: 0.6,
-              pickable: true,
-              onClick: (info: { object?: { norad: number } }) => info.object && select(info.object.norad),
-              parameters: { depthTest: false },
-            }),
+          // 위성 마커는 Three custom layer(orbital-3d)로 이관 — deck.gl은 globe+pitch에서 고도 투영이
+          // 어긋나 모델과 벌어졌다. 클릭 피킹도 그 정확 화면좌표(satHitsRef)로 아래 map.on('click')에서.
         ].filter(Boolean),
       });
     };
@@ -332,7 +456,7 @@ export default function MapCanvas() {
       window.cancelAnimationFrame(raf);
       unsub();
     };
-  }, [orbits, select]);
+  }, [select]);
 
   return (
     <>

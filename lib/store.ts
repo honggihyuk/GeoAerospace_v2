@@ -45,9 +45,17 @@ export type ViewMode = "globe" | "space";
 /** GIBS 실사 텍스처 상태 (고도화 B1). date = 실제로 입혀진 트루컬러 UTC 날짜. */
 export type Imagery = { status: "loading" | "live" | "off"; date: string | null };
 
+export type CubeSurface = "ortho" | "dem" | "sar";
+
 type AppState = {
   view: ViewMode;
   setView: (v: ViewMode) => void;
+  /** 한반도 큐브 관측(큐브샛 더블클릭). surface = 큐브 표면 데이터 소스. */
+  cube: { active: boolean; surface: CubeSurface };
+  setCubeActive: (a: boolean) => void;
+  setCubeSurface: (s: CubeSurface) => void;
+  geoscanOverlayOpen: boolean;
+  setGeoscanOverlayOpen: (open: boolean) => void;
   selectedNorad: number | null;
   layers: Layers;
   sats: SatDef[]; // 로드된 TLE (기본: 데모 세트, 마운트 후 실시간 교체)
@@ -110,6 +118,11 @@ type AppState = {
 export const useStore = create<AppState>((set) => ({
   view: "globe",
   setView: (v) => set({ view: v }),
+  cube: { active: false, surface: "sar" },
+  setCubeActive: (active) => set((s) => ({ cube: { ...s.cube, active } })),
+  setCubeSurface: (surface) => set((s) => ({ cube: { ...s.cube, surface } })),
+  geoscanOverlayOpen: true,
+  setGeoscanOverlayOpen: (geoscanOverlayOpen) => set({ geoscanOverlayOpen }),
   selectedNorad: 25544, // ISS 기본 추적
   layers: { orbits: true, groundTracks: true, satellites: true, aircraft: true, terrain: true, fires: false },
   sats: SATELLITES,
