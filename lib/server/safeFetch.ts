@@ -15,6 +15,10 @@ const ALLOW_HOSTS = new Set([
   "firms.modaps.eosdis.nasa.gov", // NASA FIRMS 활성 화재 (제안서 §4.7 / P5.5)
   "eonet.gsfc.nasa.gov", // NASA EONET 화산 이벤트 (P5.5)
   "apis.data.go.kr", // 공공데이터포털 — 기상청 GK2A 위성자료 (제안서_GK2A)
+  "earth-search.aws.element84.com", // Element84 earth-search STAC — 무인증 장면 검색 (레인 ③)
+  "api.openaq.org", // OpenAQ v3 지상 대기질 — X-API-Key 필요 (레인 ②)
+  "elevation-tiles-prod.s3.amazonaws.com", // AWS Terrarium DEM — FIRMS 바다 오탐 필터용 고도 샘플
+  "insar.ngu.no", // InSAR Norway(NGU) — 실측 Sentinel-1 지반운동 mm/yr, 무인증 (레인 ②)
 ]);
 
 type FetchOpts = {

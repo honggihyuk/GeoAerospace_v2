@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { GIBS_LAYERS } from "@/lib/gibs";
 import { safeFetch } from "@/lib/server/safeFetch";
 import { resolveDayDate } from "@/lib/server/fetchEarthImagery";
+import { retrieve } from "@/lib/server/retrieve";
+import { queryObservations, summarizeObservations } from "@/lib/server/spatial";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300; // VLM 추론이 로컬에서 30~60s 걸린다
@@ -61,9 +63,36 @@ export async function POST(req: Request) {
     if (buf.byteLength < 2000) throw new Error("영상이 비어 있음 (해당 날짜/영역 미수집)");
 
     const question = body.question?.trim() || "이 위성영상에서 보이는 것을 설명해줘.";
-    // 그라운딩: 수치는 FIRMS에서 온 사실이므로 모델이 지어내지 않도록 명시적으로 준다.
+
+    // 검색-증강 그라운딩(레인 ①): 질문+레이어로 개념 doc를 먼저 검색해 VLM에 주입한다.
+    // VLM이 물리량의 의미(예: NO₂ 컬럼≠지상농도, LST≠기온)를 오해·환각하지 않도록 정의를 공급.
+    // 검색 실패는 치명적이지 않다 — 그라운딩 없이 진행.
+    let retrieved: { title: string; text: string }[] = [];
+    try {
+      const ranked = await retrieve(`${question} ${def.label}`, 2);
+      retrieved = ranked.filter((r) => r.score > 0.3).map((r) => ({ title: r.chunk.title, text: r.chunk.text }));
+    } catch {
+      /* noop */
+    }
+    const knowledge = retrieved.length
+      ? `참고 개념(아래 정의를 따를 것): ${retrieved.map((r) => `${r.title} — ${r.text}`).join(" / ")}`
+      : "";
+
+    // 레인 ② 공간검색: 이 bbox 안의 관측(FIRMS 등)을 공간DB에서 조회해 수치 그라운딩으로 주입.
+    // 클라가 body.context를 안 줘도 DB에서 사실을 끌어오는 "검색-구동" 그라운딩(치명적이지 않음).
+    let spatial = "";
+    try {
+      const [w, s, e, n] = bbox.split(",").map(Number);
+      spatial = summarizeObservations(await queryObservations([w, s, e, n], { limit: 300 }));
+    } catch {
+      /* noop */
+    }
+
+    // 그라운딩: 수치는 관측 데이터(FIRMS 등)에서 온 사실이므로 모델이 지어내지 않도록 명시적으로 준다.
     const prompt = [
       `아래는 NASA GIBS ${def.label} 위성영상이다 (관측일 ${date}, 영역 ${bbox}).`,
+      knowledge,
+      spatial ? `참고 관측(공간DB 사실, 지어내지 말 것): ${spatial}` : "",
       body.context ? `참고 사실(관측 데이터, 반드시 이 수치를 따를 것): ${body.context}` : "",
       `질문: ${question}`,
       "영상에서 실제로 보이는 것만 근거로 3문장 이내 한국어로 답하고, 확실하지 않으면 모른다고 말할 것.",
@@ -94,6 +123,8 @@ export async function POST(req: Request) {
       date,
       bbox,
       imageBytes: buf.byteLength,
+      sources: retrieved.map((r) => r.title), // 레인① 검색-증강에 쓰인 개념 doc
+      spatial: spatial || undefined, // 레인② 공간검색 그라운딩 요약
     });
   } catch (e) {
     return NextResponse.json({ ok: false, reason: String(e) }, { status: 200 });
