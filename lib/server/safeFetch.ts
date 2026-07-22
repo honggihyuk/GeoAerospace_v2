@@ -19,6 +19,7 @@ const ALLOW_HOSTS = new Set([
   "api.openaq.org", // OpenAQ v3 지상 대기질 — X-API-Key 필요 (레인 ②)
   "elevation-tiles-prod.s3.amazonaws.com", // AWS Terrarium DEM — FIRMS 바다 오탐 필터용 고도 샘플
   "insar.ngu.no", // InSAR Norway(NGU) — 실측 Sentinel-1 지반운동 mm/yr, 무인증 (레인 ②)
+  "openapi.its.go.kr", // ITS 국가교통정보센터 — 전국 도로 CCTV(좌표+스트림), ITS_API_KEY 필요
 ]);
 
 type FetchOpts = {

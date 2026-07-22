@@ -13,8 +13,9 @@ import { KOREA_BBOX, KOREA_CENTER, GRID_NX, GRID_NY, cellLngLat, elevationColor,
 import { mapBus } from "@/lib/mapBus";
 import { simClock } from "@/lib/simClock";
 import { useFiresLayer } from "@/lib/firesClient";
+import { useCctvLayer, makeCctvIcon } from "@/lib/cctvClient";
 import { findGibsLayer, gibsTileUrl } from "@/lib/gibs";
-import type { FirePoint } from "@/lib/store";
+import type { FirePoint, CctvPoint } from "@/lib/store";
 
 // --- 글로브 스타일 (오픈·토큰프리: EOX Sentinel-2 Cloudless + AWS Terrarium DEM) ---
 // 베이스맵 = EOX s2cloudless: 1년치 Sentinel-2 관측을 합성해 **구름을 제거한** 10 m급 트루컬러.
@@ -72,17 +73,23 @@ export default function MapCanvas() {
   const koreaGridRef = useRef<KoreaGrid | null>(null); // 큐브샛 더블클릭 관측 → 한반도 큐브 그리드
   const satHitsRef = useRef<SatHit[]>([]); // orbitalLayer가 매 프레임 채우는 위성 화면좌표(클릭 피킹용)
   const iconRef = useRef<{ url: string; width: number; height: number; anchorX: number; anchorY: number; mask: boolean } | null>(null);
+  const cctvIconRef = useRef<{ url: string; width: number; height: number; anchorX: number; anchorY: number; mask: boolean } | null>(null);
   const select = useStore((s) => s.select);
   const [pickedFire, setPickedFire] = useState<FirePoint | null>(null);
+  const [pickedCctv, setPickedCctv] = useState<CctvPoint | null>(null);
   useFiresLayer(); // 레이어를 켤 때 1회 지연 로딩 (§4.8-A)
+  useCctvLayer(); // CCTV도 동일 지연 로딩
 
   // 실시간 TLE 로딩은 뷰와 무관해야 하므로 app/page.tsx의 useLiveTles()가 담당한다.
   // (여기 있던 시절엔 3D 전환 시 언마운트되며 setSats가 취소돼 영구 LOADING… 이었다.)
 
-  // 항공 아이콘 생성 (1회, 클라이언트)
+  // 항공·CCTV 아이콘 생성 (1회, 클라이언트)
   useEffect(() => {
     const url = makePlaneIcon(64);
     if (url) iconRef.current = { url, width: 64, height: 64, anchorX: 32, anchorY: 32, mask: true };
+    const curl = makeCctvIcon(64);
+    // 앵커는 핀 하단(가운데 아래) — 좌표에 정확히 꽂히도록.
+    if (curl) cctvIconRef.current = { url: curl, width: 64, height: 64, anchorX: 32, anchorY: 58, mask: true };
   }, []);
 
   // 항공 ADS-B 폴링 (12s, 차등 폴링 §4.8-A) + single-flight는 서버측
@@ -435,6 +442,21 @@ export default function MapCanvas() {
               onClick: (info: { object?: FirePoint }) => info.object && setPickedFire(info.object),
               parameters: { depthTest: false },
             }),
+          st.layers.cctv &&
+            cctvIconRef.current &&
+            new IconLayer({
+              id: "cctv",
+              data: st.cctv.points,
+              // coordx=경도, coordy=위도 → [lon, lat]. 스왑·투영 없음(WGS84 그대로).
+              getPosition: (d: CctvPoint) => [d.lon, d.lat],
+              getIcon: () => cctvIconRef.current!,
+              getSize: 24,
+              sizeUnits: "pixels",
+              getColor: [92, 225, 255, 240] as [number, number, number, number], // 아이스 시안
+              pickable: true,
+              onClick: (info: { object?: CctvPoint }) => info.object && setPickedCctv(info.object),
+              parameters: { depthTest: false },
+            }),
           // 위성 마커는 Three custom layer(orbital-3d)로 이관 — deck.gl은 globe+pitch에서 고도 투영이
           // 어긋나 모델과 벌어졌다. 클릭 피킹도 그 정확 화면좌표(satHitsRef)로 아래 map.on('click')에서.
         ].filter(Boolean),
@@ -483,6 +505,28 @@ export default function MapCanvas() {
             <span style={{ color: "var(--faint)" }}>
               {pickedFire.acqDate} {pickedFire.acqTime ? `${pickedFire.acqTime.padStart(4, "0").slice(0, 2)}:${pickedFire.acqTime.padStart(4, "0").slice(2)} UTC` : ""}
             </span>
+          </div>
+        </div>
+      )}
+      {pickedCctv && (
+        <div className="glass" style={FIRE_POPUP}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
+            <b style={{ fontSize: 12.5, color: "var(--accent, #5CE1FF)" }}>📹 도로 CCTV</b>
+            <span onClick={() => setPickedCctv(null)} style={{ cursor: "pointer", color: "var(--faint)", fontSize: 12 }}>
+              ✕
+            </span>
+          </div>
+          <div style={{ fontSize: 11.5, color: "var(--txt)", marginTop: 5 }}>{pickedCctv.name}</div>
+          <div className="mono" style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 4, lineHeight: 1.6 }}>
+            {pickedCctv.lat.toFixed(5)}, {pickedCctv.lon.toFixed(5)}
+            <br />
+            {pickedCctv.url ? (
+              <a href={pickedCctv.url} target="_blank" rel="noreferrer" style={{ color: "var(--accent, #5CE1FF)" }}>
+                실시간 영상 열기 ({pickedCctv.format ?? "stream"})
+              </a>
+            ) : (
+              <span style={{ color: "var(--faint)" }}>영상 스트림 없음 (ITS_API_KEY 설정 시 제공)</span>
+            )}
           </div>
         </div>
       )}

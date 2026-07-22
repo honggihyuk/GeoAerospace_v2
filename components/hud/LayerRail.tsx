@@ -5,7 +5,7 @@ import { useStore } from "@/lib/store";
 import { GIBS_LAYERS } from "@/lib/gibs";
 import { GK2A_NORAD, loadGk2a, loadGk2aSeries } from "@/lib/gk2aClient";
 
-type Key = "orbits" | "groundTracks" | "satellites" | "aircraft" | "terrain" | "fires";
+type Key = "orbits" | "groundTracks" | "satellites" | "aircraft" | "terrain" | "fires" | "cctv";
 
 export default function LayerRail() {
   const layers = useStore((s) => s.layers);
@@ -13,6 +13,7 @@ export default function LayerRail() {
   const aircraftCount = useStore((s) => s.aircraftCount);
   const satCount = useStore((s) => s.sats.length);
   const fires = useStore((s) => s.fires);
+  const cctv = useStore((s) => s.cctv);
   const gibs = useStore((s) => s.gibs);
   const gk2a = useStore((s) => s.gk2a);
   const selected = useStore((s) => s.selectedNorad);
@@ -34,6 +35,14 @@ export default function LayerRail() {
   }, []);
   const fireHint =
     fires.status === "loading" ? "…" : fires.status === "error" ? "실패" : fires.total ? fires.total.toLocaleString() : "FIRMS";
+  const cctvHint =
+    cctv.status === "loading"
+      ? "…"
+      : cctv.status === "error"
+        ? "실패"
+        : cctv.status === "ready"
+          ? `${cctv.points.length}${cctv.sample ? " 샘플" : ""}`
+          : "ITS";
 
   const items: { k: Key; label: string; hint: string }[] = [
     { k: "orbits", label: "궤도 링", hint: "SGP4" },
@@ -41,6 +50,7 @@ export default function LayerRail() {
     { k: "aircraft", label: "항공기", hint: aircraftCount ? aircraftCount.toLocaleString() : "…" },
     { k: "terrain", label: "3D 지형", hint: "DEM" },
     { k: "fires", label: "산불", hint: fireHint },
+    { k: "cctv", label: "도로 CCTV", hint: cctvHint },
   ];
 
   return (

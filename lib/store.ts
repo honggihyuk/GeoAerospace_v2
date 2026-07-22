@@ -11,7 +11,12 @@ type Layers = {
   terrain: boolean;
   /** NASA FIRMS 활성 화재 + EONET 화산 (제안서 §4.7 / P5.5) */
   fires: boolean;
+  /** ITS 국가교통정보센터 전국 도로 CCTV */
+  cctv: boolean;
 };
+
+export type CctvPoint = { id: string; name: string; lon: number; lat: number; url: string | null; format: string | null };
+type CctvState = { points: CctvPoint[]; source: string; sample: boolean; status: "idle" | "loading" | "ready" | "error" };
 
 /** FIRMS 탐지점 (클라 표시용) */
 export type FirePoint = {
@@ -77,6 +82,8 @@ type AppState = {
   setPrecise: (p: PreciseEphemeris | null) => void;
   fires: FireState;
   setFires: (f: Partial<FireState>) => void;
+  cctv: CctvState;
+  setCctv: (c: Partial<CctvState>) => void;
   /** GIBS 맥락영상 오버레이 (제안서 §4.7). null이면 표시 안 함. */
   gibs: { layerId: string; date: string; opacity: number } | null;
   setGibs: (g: { layerId: string; date: string; opacity?: number } | null) => void;
@@ -124,7 +131,7 @@ export const useStore = create<AppState>((set) => ({
   geoscanOverlayOpen: true,
   setGeoscanOverlayOpen: (geoscanOverlayOpen) => set({ geoscanOverlayOpen }),
   selectedNorad: 25544, // ISS 기본 추적
-  layers: { orbits: true, groundTracks: true, satellites: true, aircraft: true, terrain: true, fires: false },
+  layers: { orbits: true, groundTracks: true, satellites: true, aircraft: true, terrain: true, fires: false, cctv: false },
   sats: SATELLITES,
   tleSource: "loading",
   aircraftCount: 0,
@@ -141,6 +148,8 @@ export const useStore = create<AppState>((set) => ({
   setPrecise: (precise) => set({ precise }),
   fires: { points: [], source: "", total: 0, sampled: false, maxFrp: 0, filter: null, bbox: null, status: "idle" },
   setFires: (f) => set((s) => ({ fires: { ...s.fires, ...f } })),
+  cctv: { points: [], source: "", sample: false, status: "idle" },
+  setCctv: (c) => set((s) => ({ cctv: { ...s.cctv, ...c } })),
   gibs: null,
   setGibs: (g) => set({ gibs: g ? { opacity: 0.85, ...g } : null }),
   gk2a: {
