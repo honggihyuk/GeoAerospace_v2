@@ -1,0 +1,27 @@
+# GeoAerospace 로컬 DB — PostGIS(공간) + pgvector(임베딩).
+# 기동:  docker compose up -d --build
+# 접속:  postgres://geo:geo_dev_pw@localhost:5433/geoaerospace
+# 호스트 포트는 5433 — 로컬에 이미 5432를 쓰는 Postgres가 있어도 충돌하지 않게.
+services:
+  db:
+    build: ./db
+    image: geoaerospace-postgis-pgvector:16
+    container_name: geoaerospace-db
+    environment:
+      POSTGRES_USER: geo
+      POSTGRES_PASSWORD: geo_dev_pw
+      POSTGRES_DB: geoaerospace
+    ports:
+      - "5433:5432"
+    volumes:
+      - geo_pgdata:/var/lib/postgresql/data
+      # init/*.sql 은 데이터 볼륨이 비어 있을 때(최초 1회)만 실행된다.
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U geo -d geoaerospace"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  geo_pgdata:

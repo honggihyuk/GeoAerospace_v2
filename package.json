@@ -15,6 +15,7 @@
     "@deck.gl/mapbox": "^9.0.0",
     "maplibre-gl": "^5.6.0",
     "next": "^15.3.0",
+    "pg": "^8.22.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "satellite.js": "^5.0.0",
@@ -23,6 +24,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/pg": "^8.20.0",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@types/three": "^0.169.0",
