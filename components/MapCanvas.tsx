@@ -14,6 +14,7 @@ import { mapBus } from "@/lib/mapBus";
 import { simClock } from "@/lib/simClock";
 import { useFiresLayer } from "@/lib/firesClient";
 import { useCctvLayer } from "@/lib/cctvClient";
+import CctvPlayer from "@/components/CctvPlayer";
 import { findGibsLayer, gibsTileUrl } from "@/lib/gibs";
 import type { FirePoint, CctvPoint } from "@/lib/store";
 
@@ -598,16 +599,20 @@ export default function MapCanvas() {
               ✕
             </span>
           </div>
-          <div style={{ fontSize: 11.5, color: "var(--txt)", marginTop: 5 }}>{pickedCctv.name}</div>
-          <div className="mono" style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 4, lineHeight: 1.6 }}>
-            {pickedCctv.lat.toFixed(5)}, {pickedCctv.lon.toFixed(5)}
-            <br />
-            {pickedCctv.url ? (
+          <div style={{ fontSize: 11.5, color: "var(--txt)", margin: "6px 0 7px" }}>{pickedCctv.name}</div>
+          {pickedCctv.url ? (
+            <CctvPlayer key={pickedCctv.url} url={pickedCctv.url} />
+          ) : (
+            <div style={{ fontSize: 10.5, color: "var(--faint)", padding: "16px 0", textAlign: "center" }}>영상 스트림 없음</div>
+          )}
+          <div className="mono" style={{ fontSize: 10, color: "var(--muted)", marginTop: 7, lineHeight: 1.6, display: "flex", justifyContent: "space-between" }}>
+            <span>
+              {pickedCctv.lat.toFixed(5)}, {pickedCctv.lon.toFixed(5)}
+            </span>
+            {pickedCctv.url && (
               <a href={pickedCctv.url} target="_blank" rel="noreferrer" style={{ color: "var(--accent, #5CE1FF)" }}>
-                실시간 영상 열기 ({pickedCctv.format ?? "stream"})
+                새 창 ↗
               </a>
-            ) : (
-              <span style={{ color: "var(--faint)" }}>영상 스트림 없음 (ITS_API_KEY 설정 시 제공)</span>
             )}
           </div>
         </div>
@@ -631,6 +636,6 @@ const CCTV_POPUP: React.CSSProperties = {
   right: 16,
   top: 64,
   zIndex: 30,
-  width: 232,
+  width: 320,
   padding: "11px 13px",
 };

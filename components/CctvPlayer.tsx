@@ -1,0 +1,123 @@
+"use client";
+
+// 도로 CCTV HLS 라이브 플레이어. ITS 스트림(cctvsec.ktict.co.kr)은 CORS(*) 허용이라
+// 프록시 없이 hls.js로 직접 재생한다. 스트림은 320x240 4:3, HTTP(dev localhost는 무관).
+//   ⚠️ 배포가 HTTPS면 HTTP 스트림은 mixed-content로 차단 → 서버 프록시 필요(추후).
+import { useEffect, useRef, useState } from "react";
+
+export default function CctvPlayer({ url }: { url: string }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [err, setErr] = useState(false);
+  const [blocked, setBlocked] = useState(false); // 자동재생 차단 시 탭-투-플레이
+
+  const tryPlay = (video: HTMLVideoElement) => {
+    video.play().then(
+      () => setBlocked(false),
+      () => setBlocked(true) // 브라우저 자동재생 정책이 막음 → 사용자 탭 필요
+    );
+  };
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    setErr(false);
+    setBlocked(false);
+    let cancelled = false;
+    let hls: import("hls.js").default | null = null;
+
+    (async () => {
+      // Safari 등 네이티브 HLS 우선
+      if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        video.src = url;
+        tryPlay(video);
+        return;
+      }
+      const Hls = (await import("hls.js")).default;
+      if (cancelled) return;
+      if (Hls.isSupported()) {
+        hls = new Hls({ lowLatencyMode: true, maxBufferLength: 8, liveSyncDurationCount: 3 });
+        hls.on(Hls.Events.ERROR, (_e, data) => {
+          if (data.fatal) setErr(true);
+        });
+        hls.on(Hls.Events.MANIFEST_PARSED, () => tryPlay(video));
+        hls.loadSource(url);
+        hls.attachMedia(video);
+      } else {
+        video.src = url; // 최후 시도
+        tryPlay(video);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (hls) hls.destroy();
+      video.removeAttribute("src");
+      try {
+        video.load();
+      } catch {
+        /* noop */
+      }
+    };
+  }, [url]);
+
+  return (
+    <div style={{ position: "relative", width: "100%", aspectRatio: "4 / 3", background: "#000", borderRadius: 6, overflow: "hidden" }}>
+      <video ref={videoRef} autoPlay muted playsInline style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+      {blocked && !err && (
+        <button
+          onClick={() => videoRef.current && tryPlay(videoRef.current)}
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 30,
+            color: "#fff",
+            background: "rgba(0,0,0,0.35)",
+            border: "none",
+            cursor: "pointer",
+          }}
+          aria-label="재생"
+        >
+          ▶
+        </button>
+      )}
+      {err && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 11,
+            color: "var(--faint)",
+            textAlign: "center",
+            padding: 10,
+          }}
+        >
+          영상을 불러오지 못했습니다
+          <br />
+          (스트림 만료 시 레이어를 다시 켜세요)
+        </div>
+      )}
+      <span
+        style={{
+          position: "absolute",
+          top: 6,
+          left: 6,
+          fontSize: 9,
+          fontWeight: 700,
+          letterSpacing: "0.06em",
+          color: "#fff",
+          background: "rgba(220,40,40,0.85)",
+          padding: "1px 5px",
+          borderRadius: 3,
+        }}
+      >
+        ● LIVE
+      </span>
+    </div>
+  );
+}
