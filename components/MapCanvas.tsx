@@ -13,7 +13,7 @@ import { KOREA_BBOX, KOREA_CENTER, GRID_NX, GRID_NY, cellLngLat, elevationColor,
 import { mapBus } from "@/lib/mapBus";
 import { simClock } from "@/lib/simClock";
 import { useFiresLayer } from "@/lib/firesClient";
-import { useCctvLayer, makeCctvIcon } from "@/lib/cctvClient";
+import { useCctvLayer } from "@/lib/cctvClient";
 import { findGibsLayer, gibsTileUrl } from "@/lib/gibs";
 import type { FirePoint, CctvPoint } from "@/lib/store";
 
@@ -73,7 +73,6 @@ export default function MapCanvas() {
   const koreaGridRef = useRef<KoreaGrid | null>(null); // 큐브샛 더블클릭 관측 → 한반도 큐브 그리드
   const satHitsRef = useRef<SatHit[]>([]); // orbitalLayer가 매 프레임 채우는 위성 화면좌표(클릭 피킹용)
   const iconRef = useRef<{ url: string; width: number; height: number; anchorX: number; anchorY: number; mask: boolean } | null>(null);
-  const cctvIconRef = useRef<{ url: string; width: number; height: number; anchorX: number; anchorY: number; mask: boolean } | null>(null);
   const select = useStore((s) => s.select);
   const [pickedFire, setPickedFire] = useState<FirePoint | null>(null);
   const [pickedCctv, setPickedCctv] = useState<CctvPoint | null>(null);
@@ -87,9 +86,6 @@ export default function MapCanvas() {
   useEffect(() => {
     const url = makePlaneIcon(64);
     if (url) iconRef.current = { url, width: 64, height: 64, anchorX: 32, anchorY: 32, mask: true };
-    const curl = makeCctvIcon(64);
-    // 앵커는 핀 하단(가운데 아래) — 좌표에 정확히 꽂히도록.
-    if (curl) cctvIconRef.current = { url: curl, width: 64, height: 64, anchorX: 32, anchorY: 58, mask: true };
   }, []);
 
   // 항공 ADS-B 폴링 (12s, 차등 폴링 §4.8-A) + single-flight는 서버측
@@ -443,16 +439,18 @@ export default function MapCanvas() {
               parameters: { depthTest: false },
             }),
           st.layers.cctv &&
-            cctvIconRef.current &&
-            new IconLayer({
+            new ScatterplotLayer({
               id: "cctv",
               data: st.cctv.points,
               // coordx=경도, coordy=위도 → [lon, lat]. 스왑·투영 없음(WGS84 그대로).
               getPosition: (d: CctvPoint) => [d.lon, d.lat],
-              getIcon: () => cctvIconRef.current!,
-              getSize: 24,
-              sizeUnits: "pixels",
-              getColor: [92, 225, 255, 240] as [number, number, number, number], // 아이스 시안
+              getFillColor: [92, 225, 255, 235] as [number, number, number, number], // 아이스 시안
+              getLineColor: [255, 255, 255, 230] as [number, number, number, number],
+              stroked: true,
+              lineWidthMinPixels: 1.5,
+              getRadius: 6,
+              radiusUnits: "pixels",
+              radiusMinPixels: 4,
               pickable: true,
               onClick: (info: { object?: CctvPoint }) => info.object && setPickedCctv(info.object),
               parameters: { depthTest: false },
