@@ -76,6 +76,8 @@ export default function MapCanvas() {
   const select = useStore((s) => s.select);
   const [pickedFire, setPickedFire] = useState<FirePoint | null>(null);
   const [pickedCctv, setPickedCctv] = useState<CctvPoint | null>(null);
+  const [cctvPos, setCctvPos] = useState<{ left: number; top: number } | null>(null); // 팝업 드래그 위치(null=기본)
+  const cctvDragRef = useRef<{ ox: number; oy: number } | null>(null);
   useFiresLayer(); // 레이어를 켤 때 1회 지연 로딩 (§4.8-A)
   useCctvLayer(); // CCTV도 동일 지연 로딩
 
@@ -86,6 +88,23 @@ export default function MapCanvas() {
   useEffect(() => {
     const url = makePlaneIcon(64);
     if (url) iconRef.current = { url, width: 64, height: 64, anchorX: 32, anchorY: 32, mask: true };
+  }, []);
+
+  // CCTV 팝업 드래그 (헤더를 잡고 이동)
+  useEffect(() => {
+    const move = (e: MouseEvent) => {
+      const d = cctvDragRef.current;
+      if (d) setCctvPos({ left: e.clientX - d.ox, top: e.clientY - d.oy });
+    };
+    const up = () => {
+      cctvDragRef.current = null;
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    return () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
   }, []);
 
   // 항공 ADS-B 폴링 (12s, 차등 폴링 §4.8-A) + single-flight는 서버측
@@ -357,6 +376,77 @@ export default function MapCanvas() {
     };
   }, [gibs]);
 
+  // 도로 CCTV — maplibre 네이티브 circle 레이어. deck.gl과 달리 지도 자체 렌더라
+  // 줌 인/아웃 중에도 깜빡이지 않고 안정적으로 표시된다.
+  const cctvState = useStore((s) => s.cctv);
+  const cctvOn = useStore((s) => s.layers.cctv);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const SRC = "cctv-src";
+    const LYR = "cctv-layer";
+
+    const onClick = (e: maplibregl.MapLayerMouseEvent) => {
+      const f = e.features?.[0];
+      if (!f) return;
+      const p = f.properties as { name: string; lon: string; lat: string; url: string; format: string };
+      setCctvPos(null); // 새로 클릭하면 기본 위치로
+      setPickedCctv({ id: "", name: p.name, lon: Number(p.lon), lat: Number(p.lat), url: p.url || null, format: p.format || null });
+    };
+    const onEnter = () => { map.getCanvas().style.cursor = "pointer"; };
+    const onLeave = () => { map.getCanvas().style.cursor = ""; };
+
+    const apply = () => {
+      if (!map.isStyleLoaded()) return;
+      if (map.getLayer(LYR)) map.removeLayer(LYR);
+      if (map.getSource(SRC)) map.removeSource(SRC);
+      const pts = cctvOn ? cctvState.points : [];
+      if (!pts.length) return;
+      map.addSource(SRC, {
+        type: "geojson",
+        data: {
+          type: "FeatureCollection",
+          features: pts.map((p) => ({
+            type: "Feature" as const,
+            geometry: { type: "Point" as const, coordinates: [p.lon, p.lat] },
+            properties: { name: p.name, lon: p.lon, lat: p.lat, url: p.url ?? "", format: p.format ?? "" },
+          })),
+        },
+      });
+      map.addLayer({
+        id: LYR,
+        type: "circle",
+        source: SRC,
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 4, 3.5, 9, 6, 13, 9],
+          "circle-color": "#5CE1FF",
+          "circle-stroke-color": "#04121a",
+          "circle-stroke-width": 1.5,
+          "circle-opacity": 0.92,
+        },
+      });
+      map.on("click", LYR, onClick);
+      map.on("mouseenter", LYR, onEnter);
+      map.on("mouseleave", LYR, onLeave);
+    };
+
+    if (map.isStyleLoaded()) apply();
+    else map.once("style.load", apply);
+
+    return () => {
+      map.off("style.load", apply);
+      map.off("click", LYR, onClick);
+      map.off("mouseenter", LYR, onEnter);
+      map.off("mouseleave", LYR, onLeave);
+      try {
+        if (map.getLayer(LYR)) map.removeLayer(LYR);
+        if (map.getSource(SRC)) map.removeSource(SRC);
+      } catch {
+        /* 스타일 소거됨 */
+      }
+    };
+  }, [cctvState, cctvOn]);
+
   // 렌더 루프: 위성 전파 + 항공 dead-reckoning (30fps 게이트)
   useEffect(() => {
     const overlay = overlayRef.current;
@@ -438,23 +528,7 @@ export default function MapCanvas() {
               onClick: (info: { object?: FirePoint }) => info.object && setPickedFire(info.object),
               parameters: { depthTest: false },
             }),
-          st.layers.cctv &&
-            new ScatterplotLayer({
-              id: "cctv",
-              data: st.cctv.points,
-              // coordx=경도, coordy=위도 → [lon, lat]. 스왑·투영 없음(WGS84 그대로).
-              getPosition: (d: CctvPoint) => [d.lon, d.lat],
-              getFillColor: [92, 225, 255, 235] as [number, number, number, number], // 아이스 시안
-              getLineColor: [255, 255, 255, 230] as [number, number, number, number],
-              stroked: true,
-              lineWidthMinPixels: 1.5,
-              getRadius: 6,
-              radiusUnits: "pixels",
-              radiusMinPixels: 4,
-              pickable: true,
-              onClick: (info: { object?: CctvPoint }) => info.object && setPickedCctv(info.object),
-              parameters: { depthTest: false },
-            }),
+          // CCTV는 deck.gl 대신 maplibre 네이티브 circle 레이어(아래 useEffect) — 줌 중 깜빡임 방지.
           // 위성 마커는 Three custom layer(orbital-3d)로 이관 — deck.gl은 globe+pitch에서 고도 투영이
           // 어긋나 모델과 벌어졌다. 클릭 피킹도 그 정확 화면좌표(satHitsRef)로 아래 map.on('click')에서.
         ].filter(Boolean),
@@ -507,10 +581,20 @@ export default function MapCanvas() {
         </div>
       )}
       {pickedCctv && (
-        <div className="glass" style={FIRE_POPUP}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
+        <div className="glass" style={{ ...CCTV_POPUP, ...(cctvPos ? { left: cctvPos.left, top: cctvPos.top, right: "auto" } : {}) }}>
+          <div
+            onMouseDown={(e) => {
+              const box = (e.currentTarget.parentElement as HTMLElement).getBoundingClientRect();
+              cctvDragRef.current = { ox: e.clientX - box.left, oy: e.clientY - box.top };
+            }}
+            style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, cursor: "move", userSelect: "none" }}
+          >
             <b style={{ fontSize: 12.5, color: "var(--accent, #5CE1FF)" }}>📹 도로 CCTV</b>
-            <span onClick={() => setPickedCctv(null)} style={{ cursor: "pointer", color: "var(--faint)", fontSize: 12 }}>
+            <span
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => setPickedCctv(null)}
+              style={{ cursor: "pointer", color: "var(--faint)", fontSize: 12 }}
+            >
               ✕
             </span>
           </div>
@@ -538,5 +622,15 @@ const FIRE_POPUP: React.CSSProperties = {
   bottom: 20,
   zIndex: 25,
   width: 210,
+  padding: "11px 13px",
+};
+
+// CCTV 팝업 — 기본은 우상단(GeoAgent 버튼·타임컨트롤러와 겹치지 않게). 헤더를 잡고 드래그 이동.
+const CCTV_POPUP: React.CSSProperties = {
+  position: "absolute",
+  right: 16,
+  top: 64,
+  zIndex: 30,
+  width: 232,
   padding: "11px 13px",
 };
