@@ -74,4 +74,49 @@ export const KNOWLEDGE: Chunk[] = [
     title: "웹 궤도 시각화",
     text: "브라우저에서 satellite.js로 SGP4를 매 프레임 전파해 위성 현재 위치를 얻고, 한 주기를 샘플링해 궤도 링과 지상궤적을 만든다. MapLibre GL v5의 3D 글로브 위에 deck.gl(PathLayer·IconLayer)로 대량 객체를, Three.js custom layer로 3D 위성 모델과 센서 콘을 렌더한다.",
   },
+  {
+    id: "sar-backscatter",
+    title: "SAR 후방산란 (진폭)",
+    text: "SAR(합성개구레이더)는 마이크로파를 쏘아 지표에서 되돌아온 신호를 영상화한다. 후방산란(backscatter) 진폭은 표면의 거칠기·구조를 나타내 도시·금속 구조물은 밝고 잔잔한 수면은 어둡게 찍힌다. Sentinel-1은 C-band VV/VH 편파를 IW 모드로 관측하며 GRD 산출물이 진폭 영상이다. 진폭은 표면 상태·홍수·변화 탐지에 쓰지만 지표 변위(침하)는 측정하지 못한다 — 그것은 위상(phase) 정보가 필요하다.",
+  },
+  {
+    id: "insar",
+    title: "InSAR 지반침하 측정",
+    text: "InSAR(간섭 SAR)는 서로 다른 시각에 관측한 두 SAR 영상의 위상차로 지표 변위를 밀리미터 단위로 측정한다. DInSAR는 두 시기 차분으로 지진·화산·침하 변형을, PS-InSAR·SBAS는 다중시기(수십~수백 장) 시계열로 연간 침하속도(mm/yr)를 산출한다. 입력은 진폭이 아닌 SLC(Single Look Complex, 위상 보존) 산출물이며 SNAP·MintPy·pyroSAR로 처리한다. 처리가 무거워(GB급·수 시간) 실시간 웹이 아니라 배치로 사전계산해 결과 변위점만 소비한다.",
+  },
+  {
+    id: "s2cloudless",
+    title: "Sentinel-2 Cloudless (EOX)",
+    text: "Sentinel-2 Cloudless는 EOX가 1년치 Sentinel-2 관측을 합성해 구름을 제거한 전지구 무구름 트루컬러 모자이크다. 약 10m 해상도로 BlueMarble(약 500m)보다 훨씬 정밀해 도시·해안·지형 질감이 또렷하다. WMTS 타일(s2maps.eu)로 제공되며 정적 합성이라 궤도 스와스·구름 이음매가 없어 베이스맵에 적합하다. 비상업·저부하 용도는 무료이며 Copernicus 데이터 출처 표기가 필요하다.",
+  },
+  {
+    id: "sentinel5p",
+    title: "Sentinel-5P 대기질 (NO₂/CO)",
+    text: "Sentinel-5P의 TROPOMI 센서는 대기 미량기체의 연직 컬럼 농도를 관측한다. NO₂는 자동차·발전 연소의 지표로 도시·산업지역에서 높고, CO·SO₂·O₃·메탄도 제공한다. '컬럼 농도'는 지표부터 대기 상단까지 단위면적당 분자 총량(mol/m²)으로 지상 관측소 농도와는 다른 물리량이다. NASA GIBS 오버레이나 CDSE로 접근하며 도시 대기질·오염원 추적에 쓴다.",
+  },
+  {
+    id: "lst",
+    title: "지표면온도(LST)와 도시 열섬",
+    text: "LST(Land Surface Temperature)는 위성 열적외 밴드로 측정한 지표 표면의 온도로, 기상관측소의 기온(공기 온도)과 다르다. 도심 콘크리트·아스팔트는 주변 녹지·수변보다 LST가 높아 도시 열섬(UHI) 현상이 LST 지도에서 선명하게 드러난다. MODIS·VIIRS·Landsat이 LST를 제공하며 NASA GIBS에 래스터 레이어로 있다. 산불 열이상·폭염 취약지 분석에 활용한다.",
+  },
+  {
+    id: "dem-glo30",
+    title: "Copernicus DEM GLO-30",
+    text: "Copernicus DEM GLO-30은 TanDEM-X 레이더로 만든 전지구 30m 수치표고모델(DSM)로 무료 개방돼 있다. 오픈 기본값인 AWS Terrarium 타일보다 한반도 지형을 더 정밀·최신으로 표현해 3D 지형·큐브 고도의 프리미엄 소스로 쓴다. DSM이라 건물·수목 표고를 포함하며 지표만의 표고인 DTM과 구분된다. MapLibre setTerrain의 raster-dem 소스로 드레이프한다.",
+  },
+  {
+    id: "vworld",
+    title: "VWorld 정사영상",
+    text: "VWorld는 국토교통부가 운영하는 대한민국 공간정보 오픈플랫폼으로 고해상도 항공 정사영상(Satellite/Ortho)을 WMTS 타일로 제공한다. 정사영상은 지형·촬영각 왜곡을 보정해 지도처럼 정확한 위치로 정렬된 영상이라 시설·건물 판독에 적합하다. 인증키는 도메인 제한(Referer 검사)이 있어 서버 프록시로 Referer를 실어 호출한다. 한반도 한정 고해상도라 전지구 Sentinel-2보다 국내 상세 관측에 유리하다.",
+  },
+  {
+    id: "stac",
+    title: "STAC 위성영상 카탈로그",
+    text: "STAC(SpatioTemporal Asset Catalog)은 위성영상 장면을 시공간·속성으로 검색하는 표준 API다. bbox·날짜범위·구름비율 등으로 조건에 맞는 장면(Item)을 질의해 임의 날짜의 Sentinel-2/1 영상을 찾을 수 있다. Element84(earth-search)와 Copernicus(CDSE) STAC가 대표 엔드포인트다. RAG의 '검색' 관점에서 픽셀을 임베딩하는 대신 장면 메타데이터를 카탈로그 쿼리로 찾는 검색 레인에 해당한다.",
+  },
+  {
+    id: "openaq",
+    title: "OpenAQ 지상 대기질",
+    text: "OpenAQ는 전 세계 지상 관측소의 대기질 측정값(PM2.5·PM10·NO₂·O₃·CO 등)을 통합 제공하는 오픈 데이터 플랫폼이다. 위성 컬럼 농도(Sentinel-5P)와 달리 지표 근처 실측 농도라 사람이 실제 호흡하는 공기질에 가깝다. 위경도·시각을 가진 포인트 데이터라 FIRMS 화재처럼 벡터로 필터·분석하는 데이터다. 위성 컬럼과 지상 실측을 교차하면 오염원과 노출을 함께 볼 수 있다.",
+  },
 ];
