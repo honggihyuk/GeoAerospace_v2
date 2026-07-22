@@ -86,6 +86,39 @@ export const TOOLS = [
   {
     type: "function",
     function: {
+      name: "search_scenes",
+      description:
+        "STAC 카탈로그에서 특정 지역·기간의 위성영상 '장면'을 검색해 목록으로 보여준다. '어떤 장면이 있나', 'S2/SAR 장면 찾아줘', '구름 없는 영상 찾아줘'처럼 촬영된 장면을 조회할 때 사용. add_layer(배경 깔기)와 달리 촬영 날짜·구름비율 목록을 돌려준다.",
+      parameters: {
+        type: "object",
+        properties: {
+          place: { type: "string", description: "지역명 (예: 서울, 부산, 한반도). 생략하면 한반도" },
+          collection: { type: "string", description: "s2=광학(Sentinel-2), sar=Sentinel-1 레이더, landsat. 기본 s2" },
+          cloud: { type: "number", description: "최대 구름비율 % (광학만, 기본 20)" },
+          days: { type: "number", description: "최근 며칠 범위 (기본 90)" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "describe_region",
+      description:
+        "특정 지역의 관측 상황을 종합 브리핑한다. 'OO 지역 상황/현황', 'OO 대기질 어때', 'OO 관측 요약'처럼 한 지역의 실측 관측(화재·대기질 등)을 묻는 질의에 사용. 지역의 화재·대기질을 실시간 수집해 요약카드로 답한다.",
+      parameters: {
+        type: "object",
+        properties: {
+          place: { type: "string", description: "지역명 (예: 서울, 부산, 대전)" },
+        },
+        required: ["place"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "toggle_layer",
       description: "지도 레이어를 켜거나 끈다.",
       parameters: {
@@ -111,6 +144,8 @@ export function systemPrompt(ctx: { selected: string; aircraft: number; satellit
     "4) 산불·화재 조회/필터 → filter_fires (지역은 region, 강도 조건은 min_frp MW)",
     "5) 위성영상·연기·실제 모습으로 보기 → add_layer (연기 확산은 bands721이 잘 보인다)",
     "6) 영상 내용 해석·설명 요청 → analyze_image (VLM). 수치 조회는 filter_fires 를 쓴다.",
+    "7) 위성영상 '장면' 검색(어떤 장면 있나/S2·SAR 장면 찾아/구름 없는 영상 찾아) → search_scenes",
+    "8) 지역 관측 브리핑(OO 지역 상황/현황, OO 대기질 어때, OO 관측 요약) → describe_region(place=지명)",
     "'서울','도쿄','파리' 같은 도시는 위성이 아니라 '장소'다 → 반드시 fly_to_place 를 쓴다.",
     "요청에 없는 도구는 호출하지 않는다. 답변은 한국어 한 문장.",
   ].join("\n");

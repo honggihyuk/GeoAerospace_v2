@@ -6,11 +6,18 @@ import { computeOrbit, currentPosition } from "./orbit";
 import { geocodePlace, findCity } from "./geo";
 import { loadFires } from "./firesClient";
 import { findGibsLayer } from "./gibs";
+import { KOREA_BBOX } from "./koreaCube";
 
 type ToolCall = { name: string; args: Record<string, unknown> };
 
 /** analyze_image 결과를 replyFor로 넘기기 위한 임시 보관. */
 let lastVlmAnswer = "";
+
+/** search_scenes(STAC) 결과를 replyFor로 넘기기 위한 임시 보관. */
+let lastStac: { count: number; collection: string; scenes: { date: string; cloud: number | null }[] } | null = null;
+
+/** describe_region 브리핑 결과를 replyFor로 넘기기 위한 임시 보관. */
+let lastRegion: { answer: string; sources: string[] } | null = null;
 
 const ANALYSIS_RE = /설명|해석|분석|어디로|어느 방향|확산|규모|번지|얼마나 심각|판단|보이는|알려줘/;
 const IMAGERY_RE = /위성\s*영상|영상으로|맥락\s*영상|연기|스모크|트루컬러|truecolor|bands\s*721|실제\s*모습|가시광/i;
@@ -74,6 +81,30 @@ function resolveIntent(msg: string): ToolCall[] | null {
     return chain;
   }
 
+  // 2-a2) STAC 장면 검색 (레인 ③) — 촬영된 '장면' 목록 조회.
+  //   add_layer(GIBS 배경 오버레이)와 구분: '장면' 또는 검색동사(찾/검색/목록/조회/있)가 있을 때만.
+  //   반드시 IMAGERY_RE(add_layer) 분기보다 먼저 판정한다 — "위성영상 찾아줘"가 오버레이로 새는 것 방지.
+  if (/장면|scene\b/i.test(msg) || /(sentinel|센티넬|s-?[12]\b|sar|레이더|위성\s*영상).{0,12}(찾|검색|목록|조회|리스트|있)/i.test(msg)) {
+    const isSar = /\bsar\b|sentinel-?1|s-?1\b|레이더/i.test(msg);
+    const cloudM = msg.match(/구름\s*(\d+)|cloud\s*(\d+)/i);
+    const daysM = msg.match(/(\d+)\s*일/);
+    const FILLER = /구름|없는|최근|최신|이번|오늘|어제|내일|촬영|찍은|캡처|무슨|어떤|있는|위성|영상|장면/;
+    const city = findCity(msg);
+    const near = msg.match(/([가-힣A-Za-z][가-힣A-Za-z ]{1,20}?)\s*(?:지역|일대|상공|근처|의)?\s*(?:위성\s*영상|장면|scene)/i);
+    const place = city ?? (near && !NONPLACE.test(near[1]) && !FILLER.test(near[1]) ? near[1].trim() : undefined);
+    return [
+      {
+        name: "search_scenes",
+        args: {
+          ...(place ? { place } : {}),
+          collection: isSar ? "sar" : "s2",
+          ...(cloudM ? { cloud: Number(cloudM[1] ?? cloudM[2]) } : {}),
+          ...(daysM ? { days: Number(daysM[1]) } : {}),
+        },
+      },
+    ];
+  }
+
   // 2-b) 영상 해석 단독 요청
   if (ANALYSIS_RE.test(msg) && IMAGERY_RE.test(msg)) {
     return [{ name: "analyze_image", args: { question: msg } }];
@@ -95,6 +126,20 @@ function resolveIntent(msg: string): ToolCall[] | null {
       [/위성/, "satellites"],
     ];
     for (const [re, layer] of layerMap) if (re.test(msg)) return [{ name: "toggle_layer", args: { layer, visible: onOff } }];
+  }
+
+  // 2-e) 지역 관측 브리핑 (온디맨드) — 장소 + 상황/대기질/관측 의도.
+  //   반드시 아래 fly_to_place(도시명만 있으면 이동) 보다 먼저 판정한다.
+  //   "서울 대기질 어때"는 이동이 아니라 브리핑 — DESCRIBE_RE가 있을 때만 가로챈다.
+  {
+    const DESCRIBE_RE = /상황|현황|브리핑|브리프|대기질|공기\s*질|미세먼지|관측\s*요약|모니터링|리포트|어때|어떤가|어떻나/;
+    const FILLER = /구름|없는|최근|최신|이번|오늘|어제|내일|무슨|어떤|있는|위성|영상|장면|상황|현황|대기질|미세먼지|관측/;
+    const cityHit = findCity(msg);
+    const near = msg.match(/([가-힣A-Za-z][가-힣A-Za-z ]{1,20}?)\s*(?:지역|일대|시|의|근처)?\s*(?:상황|현황|브리핑|대기질|공기|미세먼지|관측|모니터링)/);
+    const placeCand = cityHit ?? (near && !NONPLACE.test(near[1]) && !FILLER.test(near[1]) ? near[1].trim() : undefined);
+    if (placeCand && DESCRIBE_RE.test(msg)) {
+      return [{ name: "describe_region", args: { place: placeCand, question: msg } }];
+    }
   }
 
   // 3) 장소 — 알려진 도시
@@ -248,6 +293,66 @@ async function execTool(tc: ToolCall): Promise<string | null> {
     } else st.toggleLayer(layer);
     return `toggle_layer(${layer}${typeof want === "boolean" ? `=${want}` : ""})`;
   }
+  if (name === "search_scenes") {
+    const place = String(args.place ?? "").trim();
+    // bbox 는 지명을 지오코딩해 시스템이 만든다(§4.3 환각 방지). 지명 없으면 한반도 기본.
+    let bbox = [KOREA_BBOX.west, KOREA_BBOX.south, KOREA_BBOX.east, KOREA_BBOX.north].join(",");
+    let center: [number, number] | null = null;
+    if (place) {
+      const g = await geocodePlace(place);
+      if (g) {
+        center = g;
+        const pad = 0.7; // 도시 좌표를 장면 검색용 소규모 bbox로 확장
+        bbox = [g[0] - pad, Math.max(-90, g[1] - pad), g[0] + pad, Math.min(90, g[1] + pad)].join(",");
+      }
+    }
+    try {
+      const r = await fetch("/api/stac", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bbox,
+          collection: typeof args.collection === "string" ? args.collection : "s2",
+          ...(typeof args.cloud === "number" ? { cloud: args.cloud } : {}),
+          ...(typeof args.days === "number" ? { days: args.days } : {}),
+        }),
+      });
+      const j = (await r.json()) as {
+        ok?: boolean;
+        count?: number;
+        collection?: string;
+        scenes?: { date: string; cloud: number | null }[];
+      };
+      if (!j.ok) return null;
+      lastStac = { count: j.count ?? 0, collection: j.collection ?? "sentinel-2-l2a", scenes: j.scenes ?? [] };
+      if (center) mapBus.flyTo(center[0], center[1], 4.5);
+      return `search_scenes(${place || "한반도"}, ${j.count ?? 0})`;
+    } catch {
+      return null;
+    }
+  }
+  if (name === "describe_region") {
+    const place = String(args.place ?? "").trim();
+    if (!place) return null;
+    const g = await geocodePlace(place);
+    if (!g) return null;
+    const pad = 0.35; // 도시 규모 bbox(≈39km) — 시가지 관측소·화재를 감싼다
+    const bbox = [g[0] - pad, Math.max(-90, g[1] - pad), g[0] + pad, Math.min(90, g[1] + pad)].join(",");
+    mapBus.flyTo(g[0], g[1], 5);
+    try {
+      const r = await fetch("/api/region/describe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ place, bbox, question: typeof args.question === "string" ? args.question : undefined }),
+      });
+      const j = (await r.json()) as { ok?: boolean; answer?: string; sources?: string[] };
+      if (!j.ok || !j.answer) return null;
+      lastRegion = { answer: j.answer, sources: j.sources ?? [] };
+      return `describe_region(${place})`;
+    } catch {
+      return null;
+    }
+  }
   return null;
 }
 
@@ -278,6 +383,22 @@ function replyFor(tc: ToolCall, done: string | null): string {
   }
   if (tc.name === "analyze_image") {
     return lastVlmAnswer ? `[영상 해석] ${lastVlmAnswer}` : "영상을 해석하지 못했습니다.";
+  }
+  if (tc.name === "search_scenes") {
+    if (!lastStac || lastStac.count === 0) return "해당 조건의 장면을 찾지 못했습니다. 기간을 늘리거나 구름 조건을 완화해 보세요.";
+    const kind = lastStac.collection.includes("sentinel-1")
+      ? "Sentinel-1(SAR)"
+      : lastStac.collection.includes("landsat")
+        ? "Landsat"
+        : "Sentinel-2";
+    const top = lastStac.scenes
+      .slice(0, 5)
+      .map((s) => `${s.date}${s.cloud != null ? ` (구름 ${s.cloud}%)` : ""}`)
+      .join(", ");
+    return `${kind} 장면 ${lastStac.count}건을 찾았습니다. 최적 순: ${top}.`;
+  }
+  if (tc.name === "describe_region") {
+    return lastRegion?.answer || "지역 관측 브리핑을 생성하지 못했습니다.";
   }
   if (tc.name === "toggle_layer") {
     const v = tc.args.visible;
