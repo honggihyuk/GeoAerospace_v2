@@ -14,9 +14,20 @@ import { mapBus } from "@/lib/mapBus";
 import { simClock } from "@/lib/simClock";
 import { useFiresLayer } from "@/lib/firesClient";
 import { useCctvLayer } from "@/lib/cctvClient";
+import { useIncidentLayer } from "@/lib/incidentClient";
 import CctvPlayer from "@/components/CctvPlayer";
 import { findGibsLayer, gibsTileUrl } from "@/lib/gibs";
-import type { FirePoint, CctvPoint } from "@/lib/store";
+import type { FirePoint, CctvPoint, IncidentPoint, IncidentKind } from "@/lib/store";
+
+// UTIC 돌발 종류별 색·아이콘(제목 키워드 파생). 화재(주황)와 안 겹치는 팔레트.
+const INCIDENT_STYLE: Record<IncidentKind, { color: string; icon: string; label: string }> = {
+  accident: { color: "#ff3b5c", icon: "⚠", label: "사고" },
+  construction: { color: "#ffb703", icon: "🚧", label: "공사" },
+  control: { color: "#c77dff", icon: "⛔", label: "통제" },
+  event: { color: "#4ea8de", icon: "🎪", label: "행사" },
+  weather: { color: "#48cae4", icon: "❄", label: "기상" },
+  other: { color: "#adb5bd", icon: "•", label: "돌발" },
+};
 
 // --- 글로브 스타일 (오픈·토큰프리: EOX Sentinel-2 Cloudless + AWS Terrarium DEM) ---
 // 베이스맵 = EOX s2cloudless: 1년치 Sentinel-2 관측을 합성해 **구름을 제거한** 10 m급 트루컬러.
@@ -79,8 +90,10 @@ export default function MapCanvas() {
   const [pickedCctv, setPickedCctv] = useState<CctvPoint | null>(null);
   const [cctvPos, setCctvPos] = useState<{ left: number; top: number } | null>(null); // 팝업 드래그 위치(null=기본)
   const cctvDragRef = useRef<{ ox: number; oy: number } | null>(null);
+  const [pickedIncident, setPickedIncident] = useState<IncidentPoint | null>(null);
   useFiresLayer(); // 레이어를 켤 때 1회 지연 로딩 (§4.8-A)
   useCctvLayer(); // CCTV도 동일 지연 로딩
+  useIncidentLayer(); // UTIC 돌발도 동일 지연 로딩(+3분 갱신)
 
   // 실시간 TLE 로딩은 뷰와 무관해야 하므로 app/page.tsx의 useLiveTles()가 담당한다.
   // (여기 있던 시절엔 3D 전환 시 언마운트되며 setSats가 취소돼 영구 LOADING… 이었다.)
@@ -497,6 +510,117 @@ export default function MapCanvas() {
     };
   }, [cctvState, cctvOn]);
 
+  // UTIC 실시간 돌발 — maplibre 네이티브 레이어. 전국 수백 건 규모라 클러스터 불필요.
+  // 종류(사고/공사/통제…)별 색 + 중요돌발은 큰 반경. 클릭 → 상세 팝업.
+  const incidentState = useStore((s) => s.incident);
+  const incidentOn = useStore((s) => s.layers.incident);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const SRC = "incident-src";
+    const PT = "incident-layer";
+    const LB = "incident-label";
+
+    const onClick = (e: maplibregl.MapLayerMouseEvent) => {
+      const f = e.features?.[0];
+      if (!f) return;
+      const p = f.properties as Record<string, string>;
+      setPickedIncident({
+        id: p.id,
+        kind: (p.kind as IncidentKind) ?? "other",
+        typeCd: p.typeCd ?? "",
+        title: p.title ?? "돌발상황",
+        lon: Number(p.lon),
+        lat: Number(p.lat),
+        road: p.road ?? "",
+        start: p.start ?? "",
+        end: p.end ?? "",
+        control: p.control ?? "",
+        important: p.important === "1",
+      });
+    };
+    const onEnter = () => { map.getCanvas().style.cursor = "pointer"; };
+    const onLeave = () => { map.getCanvas().style.cursor = ""; };
+
+    const apply = () => {
+      if (!map.isStyleLoaded()) return;
+      for (const id of [LB, PT]) if (map.getLayer(id)) map.removeLayer(id);
+      if (map.getSource(SRC)) map.removeSource(SRC);
+      const pts = incidentOn ? incidentState.points : [];
+      if (!pts.length) return;
+      map.addSource(SRC, {
+        type: "geojson",
+        data: {
+          type: "FeatureCollection",
+          features: pts.map((p) => ({
+            type: "Feature" as const,
+            geometry: { type: "Point" as const, coordinates: [p.lon, p.lat] },
+            properties: {
+              id: p.id,
+              kind: p.kind,
+              typeCd: p.typeCd,
+              title: p.title,
+              lon: p.lon,
+              lat: p.lat,
+              road: p.road,
+              start: p.start,
+              end: p.end,
+              control: p.control,
+              important: p.important ? "1" : "0",
+              color: INCIDENT_STYLE[p.kind]?.color ?? INCIDENT_STYLE.other.color,
+              icon: INCIDENT_STYLE[p.kind]?.icon ?? INCIDENT_STYLE.other.icon,
+            },
+          })),
+        },
+      });
+      map.addLayer({
+        id: PT,
+        type: "circle",
+        source: SRC,
+        paint: {
+          // 중요돌발(important=1)은 더 크게. 기본 반경을 줌 보간하고 중요돌발은 1.4배.
+          "circle-radius": [
+            "*",
+            ["interpolate", ["linear"], ["zoom"], 6, 5, 13, 9],
+            ["case", ["==", ["get", "important"], "1"], 1.4, 1],
+          ],
+          "circle-color": ["get", "color"],
+          "circle-stroke-color": "#04121a",
+          "circle-stroke-width": 1.5,
+          "circle-opacity": 0.92,
+        },
+      });
+      // 아이콘 글리프 라벨(줌 인 시).
+      map.addLayer({
+        id: LB,
+        type: "symbol",
+        source: SRC,
+        minzoom: 9,
+        layout: { "text-field": ["get", "icon"], "text-size": 12, "text-allow-overlap": true },
+        paint: { "text-color": "#04121a" },
+      });
+      map.on("click", PT, onClick);
+      map.on("mouseenter", PT, onEnter);
+      map.on("mouseleave", PT, onLeave);
+    };
+
+    if (map.isStyleLoaded()) apply();
+    else map.once("style.load", apply);
+
+    return () => {
+      map.off("style.load", apply);
+      map.off("click", PT, onClick);
+      map.off("mouseenter", PT, onEnter);
+      map.off("mouseleave", PT, onLeave);
+      try {
+        for (const id of [LB, PT]) if (map.getLayer(id)) map.removeLayer(id);
+        if (map.getSource(SRC)) map.removeSource(SRC);
+      } catch {
+        /* 스타일 소거됨 */
+      }
+    };
+  }, [incidentState, incidentOn]);
+
   // 렌더 루프: 위성 전파 + 항공 dead-reckoning (30fps 게이트)
   useEffect(() => {
     const overlay = overlayRef.current;
@@ -666,9 +790,48 @@ export default function MapCanvas() {
           </div>
         </div>
       )}
+      {pickedIncident && (
+        <div className="glass" style={INCIDENT_POPUP}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
+            <b style={{ fontSize: 12.5, color: INCIDENT_STYLE[pickedIncident.kind]?.color ?? "#adb5bd" }}>
+              {INCIDENT_STYLE[pickedIncident.kind]?.icon} {INCIDENT_STYLE[pickedIncident.kind]?.label ?? "돌발"}
+              {pickedIncident.important && <span style={{ color: "#ff3b5c", marginLeft: 6, fontSize: 10 }}>● 중요</span>}
+            </b>
+            <span onClick={() => setPickedIncident(null)} style={{ cursor: "pointer", color: "var(--faint)", fontSize: 12 }}>
+              ✕
+            </span>
+          </div>
+          <div style={{ fontSize: 11.5, color: "var(--txt)", margin: "7px 0", lineHeight: 1.5 }}>{pickedIncident.title}</div>
+          <div className="mono" style={{ fontSize: 10, color: "var(--muted)", lineHeight: 1.7 }}>
+            {pickedIncident.road && <div>도로: {pickedIncident.road}</div>}
+            {pickedIncident.control && <div>통제: {pickedIncident.control}</div>}
+            {(pickedIncident.start || pickedIncident.end) && (
+              <div>
+                기간: {pickedIncident.start || "?"} ~ {pickedIncident.end || "?"}
+              </div>
+            )}
+            <div style={{ color: "var(--faint)" }}>
+              {pickedIncident.lat.toFixed(5)}, {pickedIncident.lon.toFixed(5)}
+            </div>
+          </div>
+          <div style={{ fontSize: 9, color: "var(--faint)", marginTop: 7, borderTop: "1px solid var(--grid)", paddingTop: 5 }}>
+            경찰청 도시교통정보센터(UTIC) 제공
+          </div>
+        </div>
+      )}
     </>
   );
 }
+
+// UTIC 돌발 팝업 — 좌하단(CCTV 우상단·화재 우하단과 겹치지 않게).
+const INCIDENT_POPUP: React.CSSProperties = {
+  position: "absolute",
+  left: 16,
+  bottom: 20,
+  zIndex: 28,
+  width: 240,
+  padding: "11px 13px",
+};
 
 const FIRE_POPUP: React.CSSProperties = {
   position: "absolute",

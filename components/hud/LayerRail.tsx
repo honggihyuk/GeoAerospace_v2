@@ -5,7 +5,7 @@ import { useStore } from "@/lib/store";
 import { GIBS_LAYERS } from "@/lib/gibs";
 import { GK2A_NORAD, loadGk2a, loadGk2aSeries } from "@/lib/gk2aClient";
 
-type Key = "orbits" | "groundTracks" | "satellites" | "aircraft" | "terrain" | "fires" | "cctv";
+type Key = "orbits" | "groundTracks" | "satellites" | "aircraft" | "terrain" | "fires" | "cctv" | "incident";
 
 export default function LayerRail() {
   const layers = useStore((s) => s.layers);
@@ -14,6 +14,7 @@ export default function LayerRail() {
   const satCount = useStore((s) => s.sats.length);
   const fires = useStore((s) => s.fires);
   const cctv = useStore((s) => s.cctv);
+  const incident = useStore((s) => s.incident);
   const gibs = useStore((s) => s.gibs);
   const gk2a = useStore((s) => s.gk2a);
   const selected = useStore((s) => s.selectedNorad);
@@ -43,6 +44,14 @@ export default function LayerRail() {
         : cctv.status === "ready"
           ? `${cctv.points.length}${cctv.sample ? " 샘플" : ""}`
           : "ITS";
+  const incHint =
+    incident.status === "loading"
+      ? "…"
+      : incident.status === "error" || incident.configured === false
+        ? "미등록"
+        : incident.status === "ready"
+          ? String(incident.points.length)
+          : "UTIC";
 
   const items: { k: Key; label: string; hint: string }[] = [
     { k: "orbits", label: "궤도 링", hint: "SGP4" },
@@ -51,6 +60,7 @@ export default function LayerRail() {
     { k: "terrain", label: "3D 지형", hint: "DEM" },
     { k: "fires", label: "산불", hint: fireHint },
     { k: "cctv", label: "도로 CCTV", hint: cctvHint },
+    { k: "incident", label: "돌발상황", hint: incHint },
   ];
 
   return (

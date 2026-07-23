@@ -20,6 +20,7 @@ const ALLOW_HOSTS = new Set([
   "elevation-tiles-prod.s3.amazonaws.com", // AWS Terrarium DEM — FIRMS 바다 오탐 필터용 고도 샘플
   "insar.ngu.no", // InSAR Norway(NGU) — 실측 Sentinel-1 지반운동 mm/yr, 무인증 (레인 ②)
   "openapi.its.go.kr", // ITS 국가교통정보센터 — 전국 도로 CCTV(좌표+스트림), ITS_API_KEY 필요
+  "www.utic.go.kr", // 경찰청 도시교통정보센터(UTIC) — 실시간 돌발정보(imsOpenData), 소통지도(telMap). key+IP 인증(https 지원)
 ]);
 
 type FetchOpts = {

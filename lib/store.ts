@@ -13,10 +13,35 @@ type Layers = {
   fires: boolean;
   /** ITS 국가교통정보센터 전국 도로 CCTV */
   cctv: boolean;
+  /** 경찰청 도시교통정보센터(UTIC) 실시간 돌발(사고·공사·통제) */
+  incident: boolean;
 };
 
 export type CctvPoint = { id: string; name: string; lon: number; lat: number; url: string | null; format: string | null };
 type CctvState = { points: CctvPoint[]; source: string; sample: boolean; status: "idle" | "loading" | "ready" | "error" };
+
+export type IncidentKind = "accident" | "construction" | "event" | "control" | "weather" | "other";
+export type IncidentPoint = {
+  id: string;
+  kind: IncidentKind;
+  typeCd: string;
+  title: string;
+  lon: number;
+  lat: number;
+  road: string;
+  start: string;
+  end: string;
+  control: string;
+  important: boolean;
+};
+type IncidentState = {
+  points: IncidentPoint[];
+  source: string;
+  /** UTIC 키/서버 IP 미등록 등으로 데이터 못 받은 상태 표기용 */
+  configured: boolean;
+  reason: string | null;
+  status: "idle" | "loading" | "ready" | "error";
+};
 
 /** FIRMS 탐지점 (클라 표시용) */
 export type FirePoint = {
@@ -84,6 +109,8 @@ type AppState = {
   setFires: (f: Partial<FireState>) => void;
   cctv: CctvState;
   setCctv: (c: Partial<CctvState>) => void;
+  incident: IncidentState;
+  setIncident: (i: Partial<IncidentState>) => void;
   /** GIBS 맥락영상 오버레이 (제안서 §4.7). null이면 표시 안 함. */
   gibs: { layerId: string; date: string; opacity: number } | null;
   setGibs: (g: { layerId: string; date: string; opacity?: number } | null) => void;
@@ -131,7 +158,7 @@ export const useStore = create<AppState>((set) => ({
   geoscanOverlayOpen: true,
   setGeoscanOverlayOpen: (geoscanOverlayOpen) => set({ geoscanOverlayOpen }),
   selectedNorad: 25544, // ISS 기본 추적
-  layers: { orbits: true, groundTracks: true, satellites: true, aircraft: true, terrain: true, fires: false, cctv: false },
+  layers: { orbits: true, groundTracks: true, satellites: true, aircraft: true, terrain: true, fires: false, cctv: false, incident: false },
   sats: SATELLITES,
   tleSource: "loading",
   aircraftCount: 0,
@@ -150,6 +177,8 @@ export const useStore = create<AppState>((set) => ({
   setFires: (f) => set((s) => ({ fires: { ...s.fires, ...f } })),
   cctv: { points: [], source: "", sample: false, status: "idle" },
   setCctv: (c) => set((s) => ({ cctv: { ...s.cctv, ...c } })),
+  incident: { points: [], source: "", configured: true, reason: null, status: "idle" },
+  setIncident: (i) => set((s) => ({ incident: { ...s.incident, ...i } })),
   gibs: null,
   setGibs: (g) => set({ gibs: g ? { opacity: 0.85, ...g } : null }),
   gk2a: {
