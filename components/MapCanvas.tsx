@@ -377,34 +377,52 @@ export default function MapCanvas() {
     };
   }, [gibs]);
 
-  // 도로 CCTV — maplibre 네이티브 circle 레이어. deck.gl과 달리 지도 자체 렌더라
-  // 줌 인/아웃 중에도 깜빡이지 않고 안정적으로 표시된다.
+  // 도로 CCTV — maplibre 네이티브 클러스터 레이어. deck.gl과 달리 지도 자체 렌더라
+  // 줌에도 안정적이고, 11k 마커는 저줌에서 클러스터로 묶어 성능·가독성을 확보한다.
   const cctvState = useStore((s) => s.cctv);
   const cctvOn = useStore((s) => s.layers.cctv);
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     const SRC = "cctv-src";
-    const LYR = "cctv-layer";
+    const PT = "cctv-layer"; // 개별(비클러스터) 포인트
+    const CL = "cctv-clusters"; // 클러스터 원
+    const CT = "cctv-cluster-count"; // 클러스터 개수 라벨
 
-    const onClick = (e: maplibregl.MapLayerMouseEvent) => {
+    const onPointClick = (e: maplibregl.MapLayerMouseEvent) => {
       const f = e.features?.[0];
       if (!f) return;
       const p = f.properties as { name: string; lon: string; lat: string; url: string; format: string };
       setCctvPos(null); // 새로 클릭하면 기본 위치로
       setPickedCctv({ id: "", name: p.name, lon: Number(p.lon), lat: Number(p.lat), url: p.url || null, format: p.format || null });
     };
+    const onClusterClick = async (e: maplibregl.MapLayerMouseEvent) => {
+      const f = e.features?.[0];
+      const cid = f?.properties?.cluster_id;
+      if (cid == null) return;
+      try {
+        const src = map.getSource(SRC) as maplibregl.GeoJSONSource;
+        const zoom = await src.getClusterExpansionZoom(cid);
+        const c = (f!.geometry as GeoJSON.Point).coordinates as [number, number];
+        map.easeTo({ center: c, zoom });
+      } catch {
+        /* noop */
+      }
+    };
     const onEnter = () => { map.getCanvas().style.cursor = "pointer"; };
     const onLeave = () => { map.getCanvas().style.cursor = ""; };
 
     const apply = () => {
       if (!map.isStyleLoaded()) return;
-      if (map.getLayer(LYR)) map.removeLayer(LYR);
+      for (const id of [CT, CL, PT]) if (map.getLayer(id)) map.removeLayer(id);
       if (map.getSource(SRC)) map.removeSource(SRC);
       const pts = cctvOn ? cctvState.points : [];
       if (!pts.length) return;
       map.addSource(SRC, {
         type: "geojson",
+        cluster: true,
+        clusterMaxZoom: 11, // 이 줌 이상은 개별 포인트
+        clusterRadius: 48,
         data: {
           type: "FeatureCollection",
           features: pts.map((p) => ({
@@ -414,21 +432,49 @@ export default function MapCanvas() {
           })),
         },
       });
+      // 클러스터 원 — 개수에 따라 크기·색.
       map.addLayer({
-        id: LYR,
+        id: CL,
         type: "circle",
         source: SRC,
+        filter: ["has", "point_count"],
         paint: {
-          "circle-radius": ["interpolate", ["linear"], ["zoom"], 4, 3.5, 9, 6, 13, 9],
+          "circle-color": ["step", ["get", "point_count"], "#5CE1FF", 50, "#39b6e0", 300, "#2f7fb5"],
+          "circle-radius": ["step", ["get", "point_count"], 12, 50, 16, 300, 22],
+          "circle-opacity": 0.85,
+          "circle-stroke-color": "#04121a",
+          "circle-stroke-width": 1,
+        },
+      });
+      // 클러스터 개수 라벨.
+      map.addLayer({
+        id: CT,
+        type: "symbol",
+        source: SRC,
+        filter: ["has", "point_count"],
+        layout: { "text-field": ["get", "point_count_abbreviated"], "text-font": ["Noto Sans Regular"], "text-size": 11 },
+        paint: { "text-color": "#04121a" },
+      });
+      // 개별 CCTV 포인트(클러스터 아님).
+      map.addLayer({
+        id: PT,
+        type: "circle",
+        source: SRC,
+        filter: ["!", ["has", "point_count"]],
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 4, 13, 9],
           "circle-color": "#5CE1FF",
           "circle-stroke-color": "#04121a",
           "circle-stroke-width": 1.5,
-          "circle-opacity": 0.92,
+          "circle-opacity": 0.95,
         },
       });
-      map.on("click", LYR, onClick);
-      map.on("mouseenter", LYR, onEnter);
-      map.on("mouseleave", LYR, onLeave);
+      map.on("click", PT, onPointClick);
+      map.on("click", CL, onClusterClick);
+      for (const id of [PT, CL]) {
+        map.on("mouseenter", id, onEnter);
+        map.on("mouseleave", id, onLeave);
+      }
     };
 
     if (map.isStyleLoaded()) apply();
@@ -436,11 +482,14 @@ export default function MapCanvas() {
 
     return () => {
       map.off("style.load", apply);
-      map.off("click", LYR, onClick);
-      map.off("mouseenter", LYR, onEnter);
-      map.off("mouseleave", LYR, onLeave);
+      map.off("click", PT, onPointClick);
+      map.off("click", CL, onClusterClick);
+      for (const id of [PT, CL]) {
+        map.off("mouseenter", id, onEnter);
+        map.off("mouseleave", id, onLeave);
+      }
       try {
-        if (map.getLayer(LYR)) map.removeLayer(LYR);
+        for (const id of [CT, CL, PT]) if (map.getLayer(id)) map.removeLayer(id);
         if (map.getSource(SRC)) map.removeSource(SRC);
       } catch {
         /* 스타일 소거됨 */
@@ -601,7 +650,7 @@ export default function MapCanvas() {
           </div>
           <div style={{ fontSize: 11.5, color: "var(--txt)", margin: "6px 0 7px" }}>{pickedCctv.name}</div>
           {pickedCctv.url ? (
-            <CctvPlayer key={pickedCctv.url} url={pickedCctv.url} />
+            <CctvPlayer key={pickedCctv.url} url={pickedCctv.url} name={pickedCctv.name} />
           ) : (
             <div style={{ fontSize: 10.5, color: "var(--faint)", padding: "16px 0", textAlign: "center" }}>영상 스트림 없음</div>
           )}
