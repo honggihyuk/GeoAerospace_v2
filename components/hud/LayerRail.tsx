@@ -24,6 +24,7 @@ export default function LayerRail() {
   const setGk2a = useStore((s) => s.setGk2a);
   const setGibs = useStore((s) => s.setGibs);
   const [gibsDate, setGibsDate] = useState("");
+  const [open, setOpen] = useState(true); // GeoAgent처럼 접기/펼치기
   useEffect(() => {
     let alive = true;
     // 날짜는 서버가 프로브로 정한다 — "오늘"은 스와스 미수집으로 대부분 빈 영상(B1 실측)
@@ -62,36 +63,69 @@ export default function LayerRail() {
           ? String(signal.points.length)
           : "인천·대구";
 
-  const items: { k: Key; label: string; hint: string }[] = [
-    { k: "orbits", label: "궤도 링", hint: "SGP4" },
-    { k: "satellites", label: "위성", hint: String(satCount) },
-    { k: "aircraft", label: "항공기", hint: aircraftCount ? aircraftCount.toLocaleString() : "…" },
-    { k: "terrain", label: "3D 지형", hint: "DEM" },
-    { k: "fires", label: "산불", hint: fireHint },
-    { k: "cctv", label: "도로 CCTV", hint: cctvHint },
-    { k: "incident", label: "돌발상황", hint: incHint },
-    { k: "signal", label: "신호교차로", hint: sigHint },
+  // 재정렬 — 성격별 그룹(우주/항공 · 관측 · 교통). 교통은 신규 UTIC/ITS 소스를 한데 모은다.
+  const groups: { title: string | null; items: { k: Key; label: string; hint: string }[] }[] = [
+    {
+      title: null,
+      items: [
+        { k: "orbits", label: "궤도 링", hint: "SGP4" },
+        { k: "satellites", label: "위성", hint: String(satCount) },
+        { k: "aircraft", label: "항공기", hint: aircraftCount ? aircraftCount.toLocaleString() : "…" },
+        { k: "terrain", label: "3D 지형", hint: "DEM" },
+      ],
+    },
+    { title: "관측", items: [{ k: "fires", label: "산불", hint: fireHint }] },
+    {
+      title: "교통 · UTIC / ITS",
+      items: [
+        { k: "cctv", label: "도로 CCTV", hint: cctvHint },
+        { k: "incident", label: "돌발상황", hint: incHint },
+        { k: "signal", label: "신호교차로", hint: sigHint },
+      ],
+    },
   ];
+  const activeCount = groups.reduce((n, g) => n + g.items.filter((it) => layers[it.k]).length, 0);
+
+  // 접힘 — GeoAgent 런처와 동일 패턴(좌상단 컴팩트 버튼).
+  if (!open) {
+    return (
+      <button className="glass" style={S.launcher} onClick={() => setOpen(true)} aria-label="레이어 열기">
+        <span style={S.stack}>≡</span>
+        <span style={{ fontSize: 12.5, fontWeight: 600 }}>레이어</span>
+        {activeCount > 0 && <span style={S.badge}>{activeCount}</span>}
+      </button>
+    );
+  }
+
+  const Row = (it: { k: Key; label: string; hint: string }) => {
+    const on = layers[it.k];
+    return (
+      <div key={it.k} style={{ ...S.row, ...(on ? S.rowOn : {}) }} onClick={() => toggle(it.k)}>
+        <span style={{ ...S.name, color: on ? "var(--txt)" : "var(--muted)" }}>{it.label}</span>
+        <span className="mono" style={S.hint}>
+          {it.hint}
+        </span>
+        <span style={{ ...S.sw, ...(on ? S.swOn : {}) }}>
+          <span style={{ ...S.knob, ...(on ? S.knobOn : {}) }} />
+        </span>
+      </div>
+    );
+  };
 
   return (
     <div className="glass" style={S.rail}>
       <div style={S.head}>
         <span className="eyebrow">Layers</span>
+        <button style={S.collapse} onClick={() => setOpen(false)} aria-label="레이어 접기" title="접기">
+          –
+        </button>
       </div>
-      {items.map((it) => {
-        const on = layers[it.k];
-        return (
-          <div key={it.k} style={{ ...S.row, ...(on ? S.rowOn : {}) }} onClick={() => toggle(it.k)}>
-            <span style={{ ...S.name, color: on ? "var(--txt)" : "var(--muted)" }}>{it.label}</span>
-            <span className="mono" style={S.hint}>
-              {it.hint}
-            </span>
-            <span style={{ ...S.sw, ...(on ? S.swOn : {}) }}>
-              <span style={{ ...S.knob, ...(on ? S.knobOn : {}) }} />
-            </span>
-          </div>
-        );
-      })}
+      {groups.map((g, gi) => (
+        <div key={gi}>
+          {g.title && <div style={S.group}>{g.title}</div>}
+          {g.items.map((it) => Row(it))}
+        </div>
+      ))}
       <div style={S.gibs}>
         <span className="eyebrow" style={{ fontSize: 9.5 }}>
           위성영상 (GIBS)
@@ -266,7 +300,14 @@ const S: Record<string, React.CSSProperties> = {
     pointerEvents: "auto",
     flexShrink: 1,
   },
-  head: { margin: "2px 4px 8px" },
+  head: { margin: "2px 4px 8px", display: "flex", alignItems: "center", justifyContent: "space-between" },
+  collapse: { background: "none", border: 0, color: "var(--faint)", cursor: "pointer", fontSize: 16, lineHeight: 1, padding: "0 2px", marginTop: -2 },
+  // 접힘 런처 — GeoAgent 런처와 동일 위치 규칙(좌상단, glass).
+  launcher: { display: "flex", alignItems: "center", gap: 9, padding: "9px 13px", cursor: "pointer", color: "var(--txt)", pointerEvents: "auto" },
+  stack: { fontSize: 15, color: "var(--cyan)", lineHeight: 1 },
+  badge: { fontSize: 10, fontWeight: 700, color: "#04121a", background: "var(--cyan)", borderRadius: 9, padding: "1px 6px", marginLeft: 2 },
+  // 그룹 소제목 — 재정렬 구분.
+  group: { fontSize: 9.5, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--faint)", margin: "8px 6px 3px" },
   row: { display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 8, cursor: "pointer" },
   rowOn: { background: "rgba(92,225,255,0.09)" },
   name: { flex: 1, fontSize: 12.5 },
