@@ -31,15 +31,13 @@ export async function POST(req: Request) {
     return s >= (hw ? 80 : 30) ? "원활" : s >= (hw ? 40 : 15) ? "서행" : "정체";
   };
   let trafficLine = "";
-  if (traffic) {
+  if (traffic && traffic.dirs.length) {
     const L = (s: number) => level(traffic.road, s);
-    if (traffic.dirs.length === 2) {
-      const [a, b] = traffic.dirs;
-      trafficLine = `[인근 실측 · ${traffic.road}] 한 방향 ${a.speed} km/h(${L(a.speed)}), 반대 방향 ${b.speed} km/h(${L(b.speed)}). 두 방향 실측이 각 방면 혼잡도의 기준선이다.`;
-    } else {
-      const s = traffic.dirs[0]?.speed ?? traffic.roadSpeed;
-      trafficLine = `[인근 실측 · ${traffic.road}] 약 ${s} km/h(${L(s)}). 이 실측이 기준선이다.`;
-    }
+    const parts = traffic.dirs.map((d) => `${d.label} ${d.speed} km/h(${L(d.speed)})`).join(", ");
+    trafficLine =
+      traffic.dirs.length >= 2 && traffic.precise
+        ? `[인근 실측 · ${traffic.road}] ${parts}. 이 방향별 실측이 각 방면의 기준선이다. 화면 방면 지명(부산/서울 등)을 방위(북행=북쪽, 남행=남쪽, 동행=동쪽, 서행=서쪽)와 대응시켜 판정하고, 지명이 안 보이면 방위로 표기하라.`
+        : `[인근 실측 · ${traffic.road}] ${parts}. 이 실측을 기준선으로 삼아라.`;
   }
 
   const prompt = [
