@@ -17,6 +17,7 @@ import { useCctvLayer } from "@/lib/cctvClient";
 import { useIncidentLayer } from "@/lib/incidentClient";
 import { useSignalLayer } from "@/lib/signalClient";
 import CctvPlayer from "@/components/CctvPlayer";
+import DraggablePopup from "@/components/hud/DraggablePopup";
 import { findGibsLayer, gibsTileUrl } from "@/lib/gibs";
 import type { FirePoint, CctvPoint, IncidentPoint, IncidentKind, SignalPoint } from "@/lib/store";
 
@@ -918,17 +919,21 @@ export default function MapCanvas() {
         </div>
       )}
       {pickedIncident && (
-        <div className="glass" style={INCIDENT_POPUP}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
-            <b style={{ fontSize: 12.5, color: INCIDENT_STYLE[pickedIncident.kind]?.color ?? "#adb5bd" }}>
+        <DraggablePopup
+          key={pickedIncident.id}
+          defaultLeft={212}
+          defaultTop={74}
+          zIndex={28}
+          accent={INCIDENT_STYLE[pickedIncident.kind]?.color ?? "#adb5bd"}
+          onClose={() => setPickedIncident(null)}
+          title={
+            <>
               {INCIDENT_STYLE[pickedIncident.kind]?.icon} {INCIDENT_STYLE[pickedIncident.kind]?.label ?? "돌발"}
               {pickedIncident.important && <span style={{ color: "#ff3b5c", marginLeft: 6, fontSize: 10 }}>● 중요</span>}
-            </b>
-            <span onClick={() => setPickedIncident(null)} style={{ cursor: "pointer", color: "var(--faint)", fontSize: 12 }}>
-              ✕
-            </span>
-          </div>
-          <div style={{ fontSize: 11.5, color: "var(--txt)", margin: "7px 0", lineHeight: 1.5 }}>{pickedIncident.title}</div>
+            </>
+          }
+        >
+          <div style={{ fontSize: 11.5, color: "var(--txt)", marginBottom: 7, lineHeight: 1.5 }}>{pickedIncident.title}</div>
           <div className="mono" style={{ fontSize: 10, color: "var(--muted)", lineHeight: 1.7 }}>
             {pickedIncident.road && <div>도로: {pickedIncident.road}</div>}
             {pickedIncident.control && <div>통제: {pickedIncident.control}</div>}
@@ -944,17 +949,19 @@ export default function MapCanvas() {
           <div style={{ fontSize: 9, color: "var(--faint)", marginTop: 7, borderTop: "1px solid var(--grid)", paddingTop: 5 }}>
             {incidentState.source || "ITS 국가교통정보센터"}
           </div>
-        </div>
+        </DraggablePopup>
       )}
       {pickedSignal && (
-        <div className="glass" style={SIGNAL_POPUP}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
-            <b style={{ fontSize: 12.5, color: "#3ddc84" }}>🚦 신호제어 교차로</b>
-            <span onClick={() => setPickedSignal(null)} style={{ cursor: "pointer", color: "var(--faint)", fontSize: 12 }}>
-              ✕
-            </span>
-          </div>
-          <div style={{ fontSize: 11.5, color: "var(--txt)", margin: "7px 0", lineHeight: 1.5 }}>
+        <DraggablePopup
+          key={pickedSignal.id}
+          defaultLeft={212}
+          defaultTop={330}
+          zIndex={27}
+          accent="#3ddc84"
+          onClose={() => setPickedSignal(null)}
+          title="🚦 신호제어 교차로"
+        >
+          <div style={{ fontSize: 11.5, color: "var(--txt)", marginBottom: 7, lineHeight: 1.5 }}>
             {pickedSignal.name}
             {pickedSignal.regionLabel && <span style={{ color: "var(--faint)", marginLeft: 6, fontSize: 10 }}>· {pickedSignal.regionLabel}</span>}
           </div>
@@ -968,31 +975,11 @@ export default function MapCanvas() {
           <div style={{ fontSize: 9, color: "var(--faint)", marginTop: 7, borderTop: "1px solid var(--grid)", paddingTop: 5 }}>
             경찰청 신호개방(UTIC) · data.go.kr · 신호계획(TOD) 조회 추후
           </div>
-        </div>
+        </DraggablePopup>
       )}
     </>
   );
 }
-
-// UTIC 돌발 팝업 — 좌하단(CCTV 우상단·화재 우하단과 겹치지 않게).
-const INCIDENT_POPUP: React.CSSProperties = {
-  position: "absolute",
-  left: 16,
-  bottom: 20,
-  zIndex: 28,
-  width: 240,
-  padding: "11px 13px",
-};
-
-// 신호교차로 팝업 — 좌하단(돌발 위로 살짝 띄워 둘 다 열려도 구분).
-const SIGNAL_POPUP: React.CSSProperties = {
-  position: "absolute",
-  left: 16,
-  bottom: 220,
-  zIndex: 27,
-  width: 240,
-  padding: "11px 13px",
-};
 
 const FIRE_POPUP: React.CSSProperties = {
   position: "absolute",
