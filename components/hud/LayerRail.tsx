@@ -5,7 +5,7 @@ import { useStore } from "@/lib/store";
 import { GIBS_LAYERS } from "@/lib/gibs";
 import { GK2A_NORAD, loadGk2a, loadGk2aSeries } from "@/lib/gk2aClient";
 
-type Key = "orbits" | "groundTracks" | "satellites" | "aircraft" | "terrain" | "fires" | "cctv" | "incident";
+type Key = "orbits" | "groundTracks" | "satellites" | "aircraft" | "terrain" | "fires" | "cctv" | "incident" | "signal";
 
 export default function LayerRail() {
   const layers = useStore((s) => s.layers);
@@ -15,6 +15,7 @@ export default function LayerRail() {
   const fires = useStore((s) => s.fires);
   const cctv = useStore((s) => s.cctv);
   const incident = useStore((s) => s.incident);
+  const signal = useStore((s) => s.signal);
   const gibs = useStore((s) => s.gibs);
   const gk2a = useStore((s) => s.gk2a);
   const selected = useStore((s) => s.selectedNorad);
@@ -52,6 +53,14 @@ export default function LayerRail() {
         : incident.status === "ready"
           ? String(incident.points.length)
           : "UTIC";
+  const sigHint =
+    signal.status === "loading"
+      ? "…"
+      : signal.status === "error" || signal.configured === false
+        ? "키필요"
+        : signal.status === "ready"
+          ? String(signal.points.length)
+          : "인천·대구";
 
   const items: { k: Key; label: string; hint: string }[] = [
     { k: "orbits", label: "궤도 링", hint: "SGP4" },
@@ -61,6 +70,7 @@ export default function LayerRail() {
     { k: "fires", label: "산불", hint: fireHint },
     { k: "cctv", label: "도로 CCTV", hint: cctvHint },
     { k: "incident", label: "돌발상황", hint: incHint },
+    { k: "signal", label: "신호교차로", hint: sigHint },
   ];
 
   return (

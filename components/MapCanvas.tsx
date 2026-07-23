@@ -15,9 +15,10 @@ import { simClock } from "@/lib/simClock";
 import { useFiresLayer } from "@/lib/firesClient";
 import { useCctvLayer } from "@/lib/cctvClient";
 import { useIncidentLayer } from "@/lib/incidentClient";
+import { useSignalLayer } from "@/lib/signalClient";
 import CctvPlayer from "@/components/CctvPlayer";
 import { findGibsLayer, gibsTileUrl } from "@/lib/gibs";
-import type { FirePoint, CctvPoint, IncidentPoint, IncidentKind } from "@/lib/store";
+import type { FirePoint, CctvPoint, IncidentPoint, IncidentKind, SignalPoint } from "@/lib/store";
 
 // UTIC 돌발 종류별 색·아이콘(제목 키워드 파생). 화재(주황)와 안 겹치는 팔레트.
 const INCIDENT_STYLE: Record<IncidentKind, { color: string; icon: string; label: string }> = {
@@ -91,9 +92,11 @@ export default function MapCanvas() {
   const [cctvPos, setCctvPos] = useState<{ left: number; top: number } | null>(null); // 팝업 드래그 위치(null=기본)
   const cctvDragRef = useRef<{ ox: number; oy: number } | null>(null);
   const [pickedIncident, setPickedIncident] = useState<IncidentPoint | null>(null);
+  const [pickedSignal, setPickedSignal] = useState<SignalPoint | null>(null);
   useFiresLayer(); // 레이어를 켤 때 1회 지연 로딩 (§4.8-A)
   useCctvLayer(); // CCTV도 동일 지연 로딩
   useIncidentLayer(); // UTIC 돌발도 동일 지연 로딩(+3분 갱신)
+  useSignalLayer(); // 신호개방(인천·대구 교차로)도 동일 지연 로딩
 
   // 실시간 TLE 로딩은 뷰와 무관해야 하므로 app/page.tsx의 useLiveTles()가 담당한다.
   // (여기 있던 시절엔 3D 전환 시 언마운트되며 setSats가 취소돼 영구 LOADING… 이었다.)
@@ -621,6 +624,130 @@ export default function MapCanvas() {
     };
   }, [incidentState, incidentOn]);
 
+  // 신호개방 — 인천·대구 신호제어 교차로. 수천 개라 CCTV처럼 클러스터. 초록 팔레트(CCTV 시안과 구분).
+  const signalState = useStore((s) => s.signal);
+  const signalOn = useStore((s) => s.layers.signal);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const SRC = "signal-src";
+    const PT = "signal-layer";
+    const CL = "signal-clusters";
+    const CT = "signal-cluster-count";
+
+    const onPointClick = (e: maplibregl.MapLayerMouseEvent) => {
+      const f = e.features?.[0];
+      if (!f) return;
+      const p = f.properties as Record<string, string>;
+      setPickedSignal({
+        id: p.id,
+        region: p.region ?? "",
+        regionLabel: p.regionLabel ?? "",
+        intNo: p.intNo ?? "",
+        name: p.name ?? "교차로",
+        lon: Number(p.lon),
+        lat: Number(p.lat),
+        updated: p.updated ?? "",
+      });
+    };
+    const onClusterClick = async (e: maplibregl.MapLayerMouseEvent) => {
+      const f = e.features?.[0];
+      const cid = f?.properties?.cluster_id;
+      if (cid == null) return;
+      try {
+        const src = map.getSource(SRC) as maplibregl.GeoJSONSource;
+        const zoom = await src.getClusterExpansionZoom(cid);
+        const c = (f!.geometry as GeoJSON.Point).coordinates as [number, number];
+        map.easeTo({ center: c, zoom });
+      } catch {
+        /* noop */
+      }
+    };
+    const onEnter = () => { map.getCanvas().style.cursor = "pointer"; };
+    const onLeave = () => { map.getCanvas().style.cursor = ""; };
+
+    const apply = () => {
+      if (!map.isStyleLoaded()) return;
+      for (const id of [CT, CL, PT]) if (map.getLayer(id)) map.removeLayer(id);
+      if (map.getSource(SRC)) map.removeSource(SRC);
+      const pts = signalOn ? signalState.points : [];
+      if (!pts.length) return;
+      map.addSource(SRC, {
+        type: "geojson",
+        cluster: true,
+        clusterMaxZoom: 12,
+        clusterRadius: 46,
+        data: {
+          type: "FeatureCollection",
+          features: pts.map((p) => ({
+            type: "Feature" as const,
+            geometry: { type: "Point" as const, coordinates: [p.lon, p.lat] },
+            properties: { id: p.id, region: p.region, regionLabel: p.regionLabel, intNo: p.intNo, name: p.name, lon: p.lon, lat: p.lat, updated: p.updated },
+          })),
+        },
+      });
+      map.addLayer({
+        id: CL,
+        type: "circle",
+        source: SRC,
+        filter: ["has", "point_count"],
+        paint: {
+          "circle-color": ["step", ["get", "point_count"], "#3ddc84", 50, "#2bb673", 300, "#1f8a57"],
+          "circle-radius": ["step", ["get", "point_count"], 12, 50, 16, 300, 22],
+          "circle-opacity": 0.85,
+          "circle-stroke-color": "#04121a",
+          "circle-stroke-width": 1,
+        },
+      });
+      map.addLayer({
+        id: CT,
+        type: "symbol",
+        source: SRC,
+        filter: ["has", "point_count"],
+        layout: { "text-field": ["get", "point_count_abbreviated"], "text-font": ["Noto Sans Regular"], "text-size": 11 },
+        paint: { "text-color": "#04121a" },
+      });
+      map.addLayer({
+        id: PT,
+        type: "circle",
+        source: SRC,
+        filter: ["!", ["has", "point_count"]],
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 4, 15, 8],
+          "circle-color": "#3ddc84",
+          "circle-stroke-color": "#04121a",
+          "circle-stroke-width": 1.5,
+          "circle-opacity": 0.95,
+        },
+      });
+      map.on("click", PT, onPointClick);
+      map.on("click", CL, onClusterClick);
+      for (const id of [PT, CL]) {
+        map.on("mouseenter", id, onEnter);
+        map.on("mouseleave", id, onLeave);
+      }
+    };
+
+    if (map.isStyleLoaded()) apply();
+    else map.once("style.load", apply);
+
+    return () => {
+      map.off("style.load", apply);
+      map.off("click", PT, onPointClick);
+      map.off("click", CL, onClusterClick);
+      for (const id of [PT, CL]) {
+        map.off("mouseenter", id, onEnter);
+        map.off("mouseleave", id, onLeave);
+      }
+      try {
+        for (const id of [CT, CL, PT]) if (map.getLayer(id)) map.removeLayer(id);
+        if (map.getSource(SRC)) map.removeSource(SRC);
+      } catch {
+        /* 스타일 소거됨 */
+      }
+    };
+  }, [signalState, signalOn]);
+
   // 렌더 루프: 위성 전파 + 항공 dead-reckoning (30fps 게이트)
   useEffect(() => {
     const overlay = overlayRef.current;
@@ -819,6 +946,30 @@ export default function MapCanvas() {
           </div>
         </div>
       )}
+      {pickedSignal && (
+        <div className="glass" style={SIGNAL_POPUP}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
+            <b style={{ fontSize: 12.5, color: "#3ddc84" }}>🚦 신호제어 교차로</b>
+            <span onClick={() => setPickedSignal(null)} style={{ cursor: "pointer", color: "var(--faint)", fontSize: 12 }}>
+              ✕
+            </span>
+          </div>
+          <div style={{ fontSize: 11.5, color: "var(--txt)", margin: "7px 0", lineHeight: 1.5 }}>
+            {pickedSignal.name}
+            {pickedSignal.regionLabel && <span style={{ color: "var(--faint)", marginLeft: 6, fontSize: 10 }}>· {pickedSignal.regionLabel}</span>}
+          </div>
+          <div className="mono" style={{ fontSize: 10, color: "var(--muted)", lineHeight: 1.7 }}>
+            <div>교차로번호: {pickedSignal.intNo}</div>
+            {pickedSignal.updated && <div>갱신: {pickedSignal.updated}</div>}
+            <div style={{ color: "var(--faint)" }}>
+              {pickedSignal.lat.toFixed(5)}, {pickedSignal.lon.toFixed(5)}
+            </div>
+          </div>
+          <div style={{ fontSize: 9, color: "var(--faint)", marginTop: 7, borderTop: "1px solid var(--grid)", paddingTop: 5 }}>
+            경찰청 신호개방(UTIC) · data.go.kr · 신호계획(TOD) 조회 추후
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -829,6 +980,16 @@ const INCIDENT_POPUP: React.CSSProperties = {
   left: 16,
   bottom: 20,
   zIndex: 28,
+  width: 240,
+  padding: "11px 13px",
+};
+
+// 신호교차로 팝업 — 좌하단(돌발 위로 살짝 띄워 둘 다 열려도 구분).
+const SIGNAL_POPUP: React.CSSProperties = {
+  position: "absolute",
+  left: 16,
+  bottom: 220,
+  zIndex: 27,
   width: 240,
   padding: "11px 13px",
 };

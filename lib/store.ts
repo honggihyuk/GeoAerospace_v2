@@ -15,6 +15,8 @@ type Layers = {
   cctv: boolean;
   /** 경찰청 도시교통정보센터(UTIC) 실시간 돌발(사고·공사·통제) */
   incident: boolean;
+  /** 경찰청 신호개방 — 인천·대구 신호제어 교차로 */
+  signal: boolean;
 };
 
 export type CctvPoint = { id: string; name: string; lon: number; lat: number; url: string | null; format: string | null };
@@ -38,6 +40,24 @@ type IncidentState = {
   points: IncidentPoint[];
   source: string;
   /** UTIC 키/서버 IP 미등록 등으로 데이터 못 받은 상태 표기용 */
+  configured: boolean;
+  reason: string | null;
+  status: "idle" | "loading" | "ready" | "error";
+};
+
+export type SignalPoint = {
+  id: string;
+  region: string;
+  regionLabel: string;
+  intNo: string;
+  name: string;
+  lon: number;
+  lat: number;
+  updated: string;
+};
+type SignalState = {
+  points: SignalPoint[];
+  source: string;
   configured: boolean;
   reason: string | null;
   status: "idle" | "loading" | "ready" | "error";
@@ -111,6 +131,8 @@ type AppState = {
   setCctv: (c: Partial<CctvState>) => void;
   incident: IncidentState;
   setIncident: (i: Partial<IncidentState>) => void;
+  signal: SignalState;
+  setSignal: (s: Partial<SignalState>) => void;
   /** GIBS 맥락영상 오버레이 (제안서 §4.7). null이면 표시 안 함. */
   gibs: { layerId: string; date: string; opacity: number } | null;
   setGibs: (g: { layerId: string; date: string; opacity?: number } | null) => void;
@@ -158,7 +180,7 @@ export const useStore = create<AppState>((set) => ({
   geoscanOverlayOpen: true,
   setGeoscanOverlayOpen: (geoscanOverlayOpen) => set({ geoscanOverlayOpen }),
   selectedNorad: 25544, // ISS 기본 추적
-  layers: { orbits: true, groundTracks: true, satellites: true, aircraft: true, terrain: true, fires: false, cctv: false, incident: false },
+  layers: { orbits: true, groundTracks: true, satellites: true, aircraft: true, terrain: true, fires: false, cctv: false, incident: false, signal: false },
   sats: SATELLITES,
   tleSource: "loading",
   aircraftCount: 0,
@@ -179,6 +201,8 @@ export const useStore = create<AppState>((set) => ({
   setCctv: (c) => set((s) => ({ cctv: { ...s.cctv, ...c } })),
   incident: { points: [], source: "", configured: true, reason: null, status: "idle" },
   setIncident: (i) => set((s) => ({ incident: { ...s.incident, ...i } })),
+  signal: { points: [], source: "", configured: true, reason: null, status: "idle" },
+  setSignal: (sig) => set((s) => ({ signal: { ...s.signal, ...sig } })),
   gibs: null,
   setGibs: (g) => set({ gibs: g ? { opacity: 0.85, ...g } : null }),
   gk2a: {
