@@ -650,7 +650,7 @@ export default function MapCanvas() {
           </div>
           <div style={{ fontSize: 11.5, color: "var(--txt)", margin: "6px 0 7px" }}>{pickedCctv.name}</div>
           {pickedCctv.url ? (
-            <CctvPlayer key={pickedCctv.url} url={pickedCctv.url} name={pickedCctv.name} />
+            <CctvPlayer key={pickedCctv.url} url={pickedCctv.url} name={pickedCctv.name} lon={pickedCctv.lon} lat={pickedCctv.lat} />
           ) : (
             <div style={{ fontSize: 10.5, color: "var(--faint)", padding: "16px 0", textAlign: "center" }}>영상 스트림 없음</div>
           )}

@@ -5,12 +5,15 @@
 //   ⚠️ 배포가 HTTPS면 HTTP 스트림은 mixed-content로 차단 → 서버 프록시 필요(추후).
 import { useEffect, useRef, useState } from "react";
 
-export default function CctvPlayer({ url, name }: { url: string; name?: string }) {
+type Traffic = { road: string; roadSpeed: number; nearAvg: number };
+
+export default function CctvPlayer({ url, name, lon, lat }: { url: string; name?: string; lon?: number; lat?: number }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [err, setErr] = useState(false);
   const [blocked, setBlocked] = useState(false); // 자동재생 차단 시 탭-투-플레이
   const [analyzing, setAnalyzing] = useState(false);
   const [analysis, setAnalysis] = useState<string | null>(null);
+  const [traffic, setTraffic] = useState<Traffic | null>(null);
 
   const tryPlay = (video: HTMLVideoElement) => {
     video.play().then(
@@ -70,6 +73,7 @@ export default function CctvPlayer({ url, name }: { url: string; name?: string }
     if (!video || !video.videoWidth) return;
     setAnalyzing(true);
     setAnalysis(null);
+    setTraffic(null);
     try {
       const canvas = document.createElement("canvas");
       canvas.width = video.videoWidth;
@@ -81,10 +85,11 @@ export default function CctvPlayer({ url, name }: { url: string; name?: string }
       const r = await fetch("/api/analyze-frame", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image, name }),
+        body: JSON.stringify({ image, name, lon, lat }),
       });
-      const j = (await r.json()) as { ok?: boolean; answer?: string; reason?: string };
+      const j = (await r.json()) as { ok?: boolean; answer?: string; reason?: string; traffic?: Traffic | null };
       setAnalysis(j.ok ? (j.answer ?? "") : `분석 실패: ${j.reason ?? ""}`);
+      setTraffic(j.traffic ?? null);
     } catch (e) {
       setAnalysis(`분석 실패: ${String(e)}`);
     } finally {
@@ -137,6 +142,11 @@ export default function CctvPlayer({ url, name }: { url: string; name?: string }
       {analysis && (
         <div style={{ marginTop: 6, fontSize: 10.5, lineHeight: 1.55, color: "var(--txt)", background: "rgba(255,255,255,0.04)", borderRadius: 6, padding: "7px 8px" }}>
           {analysis}
+          {traffic && (
+            <div style={{ marginTop: 6, paddingTop: 5, borderTop: "1px solid rgba(255,255,255,0.08)", fontSize: 9.5, color: "var(--faint)" }}>
+              📡 실측 {traffic.road} 약 {traffic.roadSpeed} km/h (인근 평균 {traffic.nearAvg}) · ITS
+            </div>
+          )}
         </div>
       )}
     </div>
