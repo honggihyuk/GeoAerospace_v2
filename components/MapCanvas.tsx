@@ -883,7 +883,7 @@ export default function MapCanvas() {
         </div>
       )}
       {pickedCctv && (
-        <div className="glass" style={{ ...CCTV_POPUP, ...(cctvPos ? { left: cctvPos.left, top: cctvPos.top, right: "auto" } : {}) }}>
+        <div className="glass" style={{ ...CCTV_POPUP, ...(cctvPos ? { left: cctvPos.left, top: cctvPos.top, right: "auto", bottom: "auto" } : {}) }}>
           <div
             onMouseDown={(e) => {
               const box = (e.currentTarget.parentElement as HTMLElement).getBoundingClientRect();
@@ -921,8 +921,7 @@ export default function MapCanvas() {
       {pickedIncident && (
         <DraggablePopup
           key={pickedIncident.id}
-          defaultLeft={212}
-          defaultTop={74}
+          defaultPos={{ left: 212, top: 74 }}
           zIndex={28}
           accent={INCIDENT_STYLE[pickedIncident.kind]?.color ?? "#adb5bd"}
           onClose={() => setPickedIncident(null)}
@@ -954,8 +953,7 @@ export default function MapCanvas() {
       {pickedSignal && (
         <DraggablePopup
           key={pickedSignal.id}
-          defaultLeft={212}
-          defaultTop={330}
+          defaultPos={{ left: 224, bottom: 18 }}
           zIndex={27}
           accent="#3ddc84"
           onClose={() => setPickedSignal(null)}
@@ -990,11 +988,11 @@ const FIRE_POPUP: React.CSSProperties = {
   padding: "11px 13px",
 };
 
-// CCTV 팝업 — 기본은 우상단(GeoAgent 버튼·타임컨트롤러와 겹치지 않게). 헤더를 잡고 드래그 이동.
+// 도로 CCTV 팝업 기본 위치 — 우하단(GeoAgent 패널 왼쪽). 헤더 드래그 이동 시 left/top으로 전환(right/bottom 해제).
 const CCTV_POPUP: React.CSSProperties = {
   position: "absolute",
-  right: 16,
-  top: 64,
+  right: 366,
+  bottom: 20,
   zIndex: 30,
   width: 320,
   padding: "11px 13px",
