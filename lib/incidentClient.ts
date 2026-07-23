@@ -23,11 +23,12 @@ export async function loadIncidents(bbox: string = KOREA): Promise<void> {
       setIncident({ status: "error", points: [], configured: j.configured ?? true, reason: j.reason ?? "조회 실패" });
       return;
     }
+    // configured:false = ITS 데모키(전국 고정 샘플)로 데이터는 정상. 실키(ITS_API_KEY)면 bbox 정확.
     setIncident({
       points: Array.isArray(j.incidents) ? j.incidents : [],
       source: j.source ?? "",
       configured: j.configured ?? true,
-      reason: j.configured === false ? "UTIC_API_KEY 미설정(서버 IP 등록 필요)" : null,
+      reason: null,
       status: "ready",
     });
   } catch {

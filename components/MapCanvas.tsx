@@ -942,7 +942,7 @@ export default function MapCanvas() {
             </div>
           </div>
           <div style={{ fontSize: 9, color: "var(--faint)", marginTop: 7, borderTop: "1px solid var(--grid)", paddingTop: 5 }}>
-            경찰청 도시교통정보센터(UTIC) 제공
+            {incidentState.source || "ITS 국가교통정보센터"}
           </div>
         </div>
       )}

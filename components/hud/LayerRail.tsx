@@ -49,11 +49,11 @@ export default function LayerRail() {
   const incHint =
     incident.status === "loading"
       ? "…"
-      : incident.status === "error" || incident.configured === false
-        ? "미등록"
+      : incident.status === "error"
+        ? "실패"
         : incident.status === "ready"
-          ? String(incident.points.length)
-          : "UTIC";
+          ? `${incident.points.length}${incident.configured === false ? " 샘플" : ""}`
+          : "ITS";
   const sigHint =
     signal.status === "loading"
       ? "…"
