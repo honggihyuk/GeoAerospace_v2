@@ -25,31 +25,48 @@ export function isSignalConfigured(): boolean {
   return Boolean(process.env.DATA_GO_KR_SIGNAL_KEY);
 }
 
-// REGION_CD(UTIC 자체코드) → 도시명. L29=인천 확인(개방데이터 샘플). 나머지는 원본 노출.
+// REGION_CD(UTIC 자체코드) → 도시명. 실데이터 확인: L01=서울, L29=인천, L27=대구. 나머지는 원본 노출.
 function regionLabel(cd: string): string {
-  const map: Record<string, string> = { L29: "인천", L27: "대구" };
+  const map: Record<string, string> = { L01: "서울", L27: "대구", L29: "인천" };
   return map[cd] ?? cd;
 }
 
-/** X_COORD/Y_COORD → WGS84 도. 마이크로도(정수)면 ÷1e6, 이미 도 단위면 그대로. */
-function toDegree(v: number): number {
-  return Math.abs(v) > 1000 ? v / 1_000_000 : v;
+/**
+ * X_COORD/Y_COORD → WGS84 도. 실데이터 정수 스케일이 일정치 않아(문서 ÷1e6, 실 API ÷1e7)
+ * 경도·위도를 **각자 기대범위**로 내려올 때까지 10으로 나눈다. 위도(37…)는 <1000 정규화로는
+ * 375.58에서 잘못 멈추므로 반드시 위도 상한(≈90)으로 따로 정규화해야 한다.
+ */
+function normLon(v: number): number {
+  let d = Math.abs(v);
+  let g = 0;
+  while (d > 133 && g++ < 12) d /= 10;
+  return d;
+}
+function normLat(v: number): number {
+  let d = Math.abs(v);
+  let g = 0;
+  while (d > 40 && g++ < 12) d /= 10;
+  return d;
 }
 function inKorea(lon: number, lat: number): boolean {
   return lon > 123 && lon < 132.5 && lat > 32.5 && lat < 39.5;
 }
 
+/** 헤더 원소인가(데이터 행이 아님) — resultCode/resultMsg만 있고 좌표·교차로번호 없음. */
+function isHeader(o: Row): boolean {
+  return (o.resultCode !== undefined || o.resultMsg !== undefined) && o.INT_NO === undefined && o.X_COORD === undefined;
+}
+
 function parseRows(text: string): Row[] {
   const t = text.trimStart();
   if (t.startsWith("{") || t.startsWith("[")) {
-    try {
-      const j = JSON.parse(text) as { response?: { body?: { items?: { item?: unknown } | unknown } } };
-      const items = j.response?.body?.items;
-      const raw = (items as { item?: unknown })?.item ?? items ?? [];
-      return (Array.isArray(raw) ? raw : [raw]) as Row[];
-    } catch {
-      return [];
-    }
+    const j = JSON.parse(text) as unknown; // 파싱 실패는 상위에서 인증실패로 처리
+    // 실 API 형식: [{헤더}, {행}, …] 평탄 배열. (표준 {response:{body:{items:{item}}}}도 함께 지원)
+    if (Array.isArray(j)) return (j as Row[]).filter((o) => !isHeader(o));
+    const std = j as { response?: { body?: { items?: { item?: unknown } | unknown } } };
+    const items = std.response?.body?.items;
+    const raw = (items as { item?: unknown })?.item ?? items ?? [];
+    return (Array.isArray(raw) ? raw : [raw]) as Row[];
   }
   // XML: <item>…</item> 평면 파서.
   const blocks = t.match(/<item>[\s\S]*?<\/item>/g) ?? [];
@@ -72,7 +89,7 @@ export async function fetchSignalIntersections(
   const source = "경찰청 도시교통정보센터(UTIC) 신호개방 · data.go.kr";
   if (!key) return { items: [], source, configured: false };
 
-  const PER = 1000;
+  const PER = 100; // ⚠️ 서비스가 numOfRows를 100으로 캡 → 100씩 페이지네이션
   const out: SignalIntersection[] = [];
   const seen = new Set<string>();
   for (let page = 1; out.length < maxRows; page++) {
@@ -80,14 +97,21 @@ export async function fetchSignalIntersections(
     const url = `${BASE}?serviceKey=${key}&type=json&numOfRows=${PER}&pageNo=${page}`;
     const r = await safeFetch(url, { accept: "application/json, text/xml", timeoutMs: 15_000 });
     const text = await r.text();
-    if (!r.ok || /Unauthorized|SERVICE_KEY_IS_NOT_REGISTERED|resultCode>?"?:?\s*"?3[0-9]/.test(text)) {
-      throw new Error("신호개방 인증 실패(data.go.kr 서비스키 확인)");
+    const head = text.trimStart()[0];
+    // 게이트웨이 평문 오류(Forbidden/Unauthorized/Unexpected errors 등) = JSON/XML이 아님.
+    if (!r.ok || (head !== "{" && head !== "[" && head !== "<")) {
+      throw new Error(`신호개방 인증/권한 오류: ${text.trim().slice(0, 80)} — data.go.kr 활용신청·서비스키 확인`);
     }
-    const rows = parseRows(text);
+    let rows: Row[];
+    try {
+      rows = parseRows(text);
+    } catch {
+      throw new Error(`신호개방 응답 파싱 실패: ${text.trim().slice(0, 80)}`);
+    }
     if (!rows.length) break;
     for (const row of rows) {
-      const lon = toDegree(Number(row.X_COORD));
-      const lat = toDegree(Number(row.Y_COORD));
+      const lon = normLon(Number(row.X_COORD));
+      const lat = normLat(Number(row.Y_COORD));
       if (!Number.isFinite(lon) || !Number.isFinite(lat) || !inKorea(lon, lat)) continue;
       const region = String(row.REGION_CD ?? "").trim();
       const intNo = String(row.INT_NO ?? "").trim();
