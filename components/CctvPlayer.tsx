@@ -5,7 +5,7 @@
 //   ⚠️ 배포가 HTTPS면 HTTP 스트림은 mixed-content로 차단 → 서버 프록시 필요(추후).
 import { useEffect, useRef, useState } from "react";
 
-type Traffic = { road: string; roadSpeed: number; nearAvg: number };
+type Traffic = { road: string; roadSpeed: number; nearAvg: number; dirs: { speed: number }[] };
 
 export default function CctvPlayer({ url, name, lon, lat }: { url: string; name?: string; lon?: number; lat?: number }) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -144,7 +144,11 @@ export default function CctvPlayer({ url, name, lon, lat }: { url: string; name?
           {analysis}
           {traffic && (
             <div style={{ marginTop: 6, paddingTop: 5, borderTop: "1px solid rgba(255,255,255,0.08)", fontSize: 9.5, color: "var(--faint)" }}>
-              📡 실측 {traffic.road} 약 {traffic.roadSpeed} km/h (인근 평균 {traffic.nearAvg}) · ITS
+              📡 실측 {traffic.road}{" "}
+              {traffic.dirs && traffic.dirs.length === 2
+                ? `방향별 ${traffic.dirs[0].speed}·${traffic.dirs[1].speed} km/h`
+                : `약 ${traffic.roadSpeed} km/h`}{" "}
+              · ITS
             </div>
           )}
         </div>
