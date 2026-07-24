@@ -38,8 +38,10 @@ export type ChangeResult = {
   indices_used: IndexName[];
   valid_pixels: number;
   area_km2: number;
-  /** 유효 픽셀 비율 0~1 — 구름·그늘 마스킹 후 남은 비율. 낮으면 통계를 신뢰하면 안 된다. */
+  /** 합성 기준 유효 픽셀 비율 0~1 (세 지수가 모두 필요해 가장 엄격). */
   valid_fraction: number;
+  /** dNBR 기준 유효 비율 — NBR 두 시점만 있으면 되므로 합성보다 관대하다. */
+  dnbr_valid_fraction: number;
   warning: string | null;
   composite: { mean: number; max: number; changed_area_m2: number; classes: ClassStat[] };
   dnbr: { mean: number; max: number; burned_area_m2: number; classes: ClassStat[] } | null;
@@ -80,12 +82,24 @@ function tally(
  * bbox 영역의 두 시점 변화. from/to는 각각 그 날짜 기준 과거 60일에서 장면을 고른다.
  * 같은 bbox·같은 출력 격자로 리샘플하므로 두 시점 픽셀이 지리적으로 대응한다.
  */
-export async function computeChange(
+/** 변화 격자 — 통계·PNG가 공유한다. 무효 픽셀은 null. */
+export type ChangeGrids = {
+  composite: (number | null)[];
+  dnbr: (number | null)[];
+  width: number;
+  height: number;
+  pixelM: number;
+  fromScene: string;
+  toScene: string;
+};
+
+/** 격자까지 함께 반환하는 내부 계산(통계 전용 진입점은 computeChange). */
+export async function computeChangeGrids(
   bbox: [number, number, number, number],
   fromDate: string,
   toDate: string,
   opts: { maxCloud?: number; windowDays?: number } = {}
-): Promise<ChangeResult> {
+): Promise<{ result: ChangeResult; grids: ChangeGrids }> {
   const indices = Object.keys(WEIGHTS) as IndexName[];
   const cloud = opts.maxCloud ?? 40;
   const WINDOW_DAYS = opts.windowDays ?? 30; // 좁은 창으로 사건 전후를 확실히 가른다
@@ -157,7 +171,7 @@ export async function computeChange(
   const sceneOf = (when: "from" | "to") =>
     Object.fromEntries(indices.map((i) => [i, `${get(i, when).scene.id} (${get(i, when).scene.date})`]));
 
-  return {
+  const result: ChangeResult = {
     bbox,
     from: { date: fromDate, scenes: sceneOf("from") },
     to: { date: toDate, scenes: sceneOf("to") },
@@ -166,11 +180,15 @@ export async function computeChange(
     valid_pixels: compCount,
     area_km2: Math.round((compCount * pixelArea) / 1000) / 1000,
     valid_fraction: Math.round((compCount / n) * 1000) / 1000,
+    dnbr_valid_fraction: Math.round((dnbrCount / n) * 1000) / 1000,
     // ⚠️ 조용한 저품질 결과 금지 — 유효 픽셀이 적으면 남은 픽셀이 편향돼 통계가 무의미하다
     //    (실측: 겨울 산악 장면은 지형그늘·구름으로 2%만 남아 dNBR 부호가 뒤집혔다).
     warning:
-      compCount / n < 0.3
-        ? `유효 픽셀 ${Math.round((compCount / n) * 100)}%뿐 — 구름·그늘로 대부분 마스킹됨. 다른 날짜(구름 적은 시기)로 재시도 권장. 이 수치는 신뢰하지 말 것.`
+      // ⚠️ 지표별로 유효 비율이 다르다(합성은 세 지수 모두 필요). 뭉뚱그려 경고하면
+      //    실제로는 쓸 만한 dNBR까지 "신뢰 불가"로 오해된다 → 지표를 명시한다.
+      compCount / n < 0.3 || dnbrCount / n < 0.3
+        ? `유효 픽셀 — 합성 ${Math.round((compCount / n) * 100)}% / dNBR ${Math.round((dnbrCount / n) * 100)}%. ` +
+          `30% 미만인 지표는 구름·연기·그늘로 대부분 마스킹돼 통계가 편향됐을 수 있으니 신뢰하지 말 것.`
         : null,
     composite: {
       mean: Math.round((compSum / compCount) * 1e4) / 1e4,
@@ -188,4 +206,26 @@ export async function computeChange(
       : null,
     note: "합성=Σw|Δ지수|/Σw (NDVI .35, NDWI .15, NBR .15; BSI 미포함). dNBR=NBR(전)-NBR(후), 양수가 연소.",
   };
+  return {
+    result,
+    grids: {
+      composite,
+      dnbr,
+      width: base.width,
+      height: base.height,
+      pixelM: base.pixelM,
+      fromScene: get("nbr", "from").scene.id,
+      toScene: get("nbr", "to").scene.id,
+    },
+  };
+}
+
+/** bbox 영역의 두 시점 변화 통계. */
+export async function computeChange(
+  bbox: [number, number, number, number],
+  fromDate: string,
+  toDate: string,
+  opts: { maxCloud?: number; windowDays?: number } = {}
+): Promise<ChangeResult> {
+  return (await computeChangeGrids(bbox, fromDate, toDate, opts)).result;
 }
