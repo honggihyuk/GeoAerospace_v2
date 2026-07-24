@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { fetchTrafficNear } from "@/lib/server/fetchTraffic";
+import { ollamaChat, VLM_NUM_CTX } from "@/lib/server/llm";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300; // 로컬 VLM 추론 10~40s
@@ -54,21 +55,18 @@ export async function POST(req: Request) {
     .join(" ");
 
   try {
-    const r = await fetch(`${OLLAMA}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: VLM,
-        stream: false,
-        messages: [{ role: "user", content: prompt, images: [image] }],
-        options: { temperature: 0.2, num_predict: 256 },
-      }),
-      signal: AbortSignal.timeout(280_000),
+    // ⚠️ num_ctx 필수 — 실측 속도(traffic) 주입이 기본 창에서 잘리면 VLM이 혼잡도를
+    //    실측 대신 화면 인상으로 판단한다(문서 §5.3의 스퓨리어스 오판과 같은 실패 모드).
+    const res = await ollamaChat({
+      model: VLM,
+      messages: [{ role: "user", content: prompt, images: [image] }],
+      temperature: 0.2,
+      numCtx: VLM_NUM_CTX,
+      numPredict: 256,
+      timeoutMs: 280_000,
     });
-    if (!r.ok) return NextResponse.json({ ok: false, reason: `vlm ${r.status}` }, { status: 200 });
-    const j = (await r.json()) as { message?: { content?: string } };
-    const answer = (j.message?.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-    return NextResponse.json({ ok: true, answer: answer || "분석 결과가 없습니다.", model: VLM, traffic });
+    if (!res.ok) return NextResponse.json({ ok: false, reason: res.reason ?? "vlm 실패" }, { status: 200 });
+    return NextResponse.json({ ok: true, answer: res.content || "분석 결과가 없습니다.", model: VLM, traffic });
   } catch (e) {
     return NextResponse.json({ ok: false, reason: String(e) }, { status: 200 });
   }

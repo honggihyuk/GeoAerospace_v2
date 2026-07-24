@@ -4,12 +4,11 @@ import { buildRegionCard } from "@/lib/server/regionCard";
 import { retrieve } from "@/lib/server/retrieve";
 import { embed } from "@/lib/server/embed";
 import { db, dbReady, toVector } from "@/lib/server/db";
+import { ollamaChat, fitToBudget } from "@/lib/server/llm";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 180;
 
-const OLLAMA = process.env.OLLAMA_URL ?? "http://localhost:11434";
-const MODEL = process.env.AGENT_MODEL ?? "qwen3:8b";
 // 카드 신선도 TTL(분). 이 시간 내 카드는 재인제스트 없이 재사용 → 반복 질의 즉답.
 const CARD_TTL_MIN = Number(process.env.CARD_TTL_MIN ?? 30);
 
@@ -74,31 +73,19 @@ export async function POST(req: Request) {
     const sys =
       "너는 지역 관측 브리핑 어시스턴트다. 아래 [관측카드]의 실측 수치를 근거로 한국어 3~4문장으로 요약하라. " +
       "카드에 없는 수치는 지어내지 말고, [개념]은 용어 해석에만 참고하라. 사고 과정은 출력하지 마라.";
-    const user = `[관측카드]\n${cardBody}\n\n[개념]\n${conceptCtx || "(없음)"}\n\n[질문] ${question}`;
+    // 관측카드(실측)를 개념보다 우선 보존 — 카드가 잘리면 브리핑이 근거를 잃는다.
+    const user =
+      `[관측카드]\n${fitToBudget(cardBody, 10_000, "관측카드")}\n\n` +
+      `[개념]\n${fitToBudget(conceptCtx || "(없음)", 4_000, "개념")}\n\n[질문] ${question}`;
 
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 120_000);
-    const r = await fetch(`${OLLAMA}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: ctrl.signal,
-      body: JSON.stringify({
-        model: MODEL,
-        messages: [
-          { role: "system", content: sys },
-          { role: "user", content: user },
-        ],
-        think: false,
-        stream: false,
-        options: { temperature: 0.2 },
-      }),
-    }).finally(() => clearTimeout(timer));
-
-    let answer = "";
-    if (r.ok) {
-      const j = (await r.json()) as { message?: { content?: string } };
-      answer = (j.message?.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-    }
+    const res = await ollamaChat({
+      messages: [
+        { role: "system", content: sys },
+        { role: "user", content: user },
+      ],
+      timeoutMs: 120_000,
+    });
+    const answer = res.content;
 
     return NextResponse.json({
       ok: true,

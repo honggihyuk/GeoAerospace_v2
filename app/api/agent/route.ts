@@ -1,10 +1,8 @@
 import { NextResponse } from "next/server";
 import { TOOLS, systemPrompt } from "@/lib/agentTools";
+import { ollamaChat } from "@/lib/server/llm";
 
 export const dynamic = "force-dynamic";
-
-const OLLAMA = process.env.OLLAMA_URL ?? "http://localhost:11434";
-const MODEL = process.env.AGENT_MODEL ?? "qwen3:8b";
 
 type Ctx = { selected: string; aircraft: number; satellites: string[]; layers: Record<string, boolean> };
 
@@ -21,37 +19,21 @@ export async function POST(req: Request) {
 
   const ctx: Ctx = body.context ?? { selected: "none", aircraft: 0, satellites: [], layers: {} };
 
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 60_000);
-    const r = await fetch(`${OLLAMA}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: ctrl.signal,
-      body: JSON.stringify({
-        model: MODEL,
-        messages: [
-          { role: "system", content: systemPrompt(ctx) },
-          { role: "user", content: message },
-        ],
-        tools: TOOLS,
-        think: true, // Qwen3는 thinking으로 학습된 도구호출 → 켜야 도구선택 정확 (§4.5)
-        stream: false,
-        options: { temperature: 0.1 },
-      }),
-    }).finally(() => clearTimeout(timer));
+  const res = await ollamaChat({
+    messages: [
+      { role: "system", content: systemPrompt(ctx) },
+      { role: "user", content: message },
+    ],
+    tools: TOOLS,
+    think: true, // Qwen3는 thinking으로 학습된 도구호출 → 켜야 도구선택 정확 (§4.5)
+  });
 
-    if (!r.ok) {
-      return NextResponse.json({ content: `모델 서버 오류(${r.status}). Ollama가 실행 중인지 확인하세요.`, toolCalls: [] });
-    }
-    const j = (await r.json()) as { message?: { content?: string; tool_calls?: { function: { name: string; arguments: Record<string, unknown> } }[] } };
-    const toolCalls = (j.message?.tool_calls ?? []).map((t) => ({ name: t.function.name, args: t.function.arguments }));
-    return NextResponse.json({ content: j.message?.content ?? "", toolCalls });
-  } catch (e) {
+  if (!res.ok) {
     return NextResponse.json({
       content: "에이전트 백본(Ollama Qwen3)에 연결하지 못했습니다. `ollama serve` 및 `qwen3:8b` 설치를 확인하세요.",
       toolCalls: [],
-      error: String(e),
+      error: res.reason,
     });
   }
+  return NextResponse.json({ content: res.content, toolCalls: res.toolCalls, promptTokens: res.promptTokens });
 }

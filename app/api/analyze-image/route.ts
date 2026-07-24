@@ -4,6 +4,7 @@ import { safeFetch } from "@/lib/server/safeFetch";
 import { resolveDayDate } from "@/lib/server/fetchEarthImagery";
 import { retrieve } from "@/lib/server/retrieve";
 import { queryObservations, summarizeObservations } from "@/lib/server/spatial";
+import { ollamaChat, VLM_NUM_CTX } from "@/lib/server/llm";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300; // VLM 추론이 로컬에서 30~60s 걸린다
@@ -100,20 +101,18 @@ export async function POST(req: Request) {
       .filter(Boolean)
       .join("\n");
 
-    const r = await fetch(`${OLLAMA}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: VLM,
-        stream: false,
-        messages: [{ role: "user", content: prompt, images: [buf.toString("base64")] }],
-        options: { temperature: 0.2, num_predict: 220 },
-      }),
-      signal: AbortSignal.timeout(280_000),
+    // ⚠️ num_ctx 필수 — 이미지 토큰 + 관측 주입이 기본 창(≈2k)을 넘으면 "참고 관측"이
+    //    앞에서 잘려나가 VLM이 수치를 지어낸다(텍스트 경로에서 실증된 절단 환각과 동일 원인).
+    const res = await ollamaChat({
+      model: VLM,
+      messages: [{ role: "user", content: prompt, images: [buf.toString("base64")] }],
+      temperature: 0.2, // 시각 서술은 약간의 유연성 허용(수치는 주입된 관측을 따르게 프롬프트로 강제)
+      numCtx: VLM_NUM_CTX,
+      numPredict: 220,
+      timeoutMs: 280_000,
     });
-    if (!r.ok) throw new Error(`vlm ${r.status}`);
-    const j = (await r.json()) as { message?: { content?: string } };
-    const answer = (j.message?.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+    if (!res.ok) throw new Error(res.reason ?? "vlm 실패");
+    const answer = res.content;
 
     return NextResponse.json({
       ok: true,
