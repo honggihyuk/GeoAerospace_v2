@@ -21,7 +21,22 @@ const ALLOW_HOSTS = new Set([
   "insar.ngu.no", // InSAR Norway(NGU) — 실측 Sentinel-1 지반운동 mm/yr, 무인증 (레인 ②)
   "openapi.its.go.kr", // ITS 국가교통정보센터 — 전국 도로 CCTV(좌표+스트림), ITS_API_KEY 필요
   "www.utic.go.kr", // 경찰청 도시교통정보센터(UTIC) — 실시간 돌발정보(imsOpenData), 소통지도(telMap). key+IP 인증(https 지원)
+  "sentinel-cogs.s3.us-west-2.amazonaws.com", // Sentinel-2 L2A COG 밴드(공개) — 분광지수 NDVI/NDWI/NBR
 ]);
+
+/**
+ * 호스트 allowlist 검사만 노출한다.
+ * geotiff.js처럼 **자체 HTTP Range 요청**을 쓰는 라이브러리는 safeFetch를 태울 수 없으므로,
+ * 호출 전에 이걸로 호스트를 검증해 SSRF 가드의 의도(allowlist)를 유지한다.
+ */
+export function isAllowedHost(urlOrHost: string): boolean {
+  try {
+    const h = urlOrHost.includes("://") ? new URL(urlOrHost).hostname : urlOrHost;
+    return ALLOW_HOSTS.has(h);
+  } catch {
+    return false;
+  }
+}
 
 /**
  * ⚠️ 중간 인증서를 누락해 체인 검증이 실패하는 호스트(UNABLE_TO_VERIFY_LEAF_SIGNATURE).
