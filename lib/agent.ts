@@ -34,6 +34,23 @@ type SpectralStats = {
 };
 let lastSpectral: SpectralStats | null = null;
 
+/** change_detection 결과를 replyFor로 넘기기 위한 임시 보관. */
+type ChangeStats = {
+  place: string;
+  from: { date: string };
+  to: { date: string };
+  area_km2: number;
+  valid_fraction: number;
+  dnbr_valid_fraction: number;
+  warning: string | null;
+  composite: { mean: number; changed_area_m2: number; classes: { label: string; percentage: number }[] };
+  dnbr: { mean: number; burned_area_m2: number; classes: { label: string; percentage: number }[] } | null;
+};
+let lastChange: ChangeStats | null = null;
+
+// 변화 탐지 의도 — 두 날짜(YYYY-MM-DD)가 있어야 성립한다(사건 전/후를 시스템이 임의로 못 정함).
+const CHANGE_RE = /변화|전후|피해\s*(면적|규모|정도)|dnbr|연소\s*심각도|비교/i;
+
 // 분광지수 의도 — 반드시 산불(FIRMS) 분기보다 먼저 판정한다.
 //   "산불 보여줘"는 FIRMS 포인트지만 "산불 피해 면적"은 NBR(연소 정도) 이므로,
 //   NBR 트리거는 피해/흔적/연소처럼 **명시적 단어**가 있을 때만 걸리게 좁힌다.
@@ -44,6 +61,24 @@ const NBR_RE = /nbr|연소\s*(지수|정도|도)|화상|소실\s*면적|산불\s
 const ANALYSIS_RE = /설명|해석|분석|어디로|어느 방향|확산|규모|번지|얼마나 심각|판단|보이는|알려줘/;
 const IMAGERY_RE = /위성\s*영상|영상으로|맥락\s*영상|연기|스모크|트루컬러|truecolor|bands\s*721|실제\s*모습|가시광/i;
 const NONPLACE = /궤도|지상\s*궤적|위성|항공|비행|레이어|지형|영상|화재|산불|고도|속도|주기/;
+
+/** 수치가 많아 자연어 서술이 도움 되는 도구 — 서술은 덧붙일 뿐 수치를 대체하지 않는다. */
+const NARRATE_TOOLS = new Set(["spectral_index", "change_detection"]);
+
+/** 결정론 수치 → 자연스러운 문장. 실패하면 null(서술 없이 수치만 보여준다 — 절대 막지 않는다). */
+async function narrate(facts: string): Promise<string | null> {
+  try {
+    const r = await fetch("/api/narrate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ facts }),
+    });
+    const j = (await r.json()) as { ok?: boolean; text?: string };
+    return j.ok && j.text?.trim() ? j.text.trim() : null;
+  } catch {
+    return null;
+  }
+}
 
 // 결정론적 의도 해석 (설계서 §4.5 그라운딩) — 소형 로컬 모델의 도구선택 변동성 보정.
 function resolveIntent(msg: string): ToolCall[] | null {
@@ -65,6 +100,20 @@ function resolveIntent(msg: string): ToolCall[] | null {
 
   // 2) 레이어 토글 (켜/끄 동사가 있을 때만)
   const onOff = /(켜|표시|보이게|활성|on)/.test(msg) ? true : /(꺼|끄|숨|비활성|제거|off)/.test(msg) ? false : null;
+
+  // 2-00) 변화 탐지 — 날짜 2개가 명시된 경우만. 분광지수보다 먼저 판정한다.
+  {
+    const dates = msg.match(/\d{4}-\d{2}-\d{2}/g) ?? [];
+    if (CHANGE_RE.test(msg) && dates.length >= 2) {
+      const cityHit = findCity(msg);
+      const near = msg.match(/([가-힣A-Za-z][가-힣A-Za-z ]{1,24}?)\s*(?:의|지역|일대|산불|화재|변화|피해)/);
+      const place = cityHit ?? (near && !NONPLACE.test(near[1]) ? near[1].trim() : undefined);
+      if (place) {
+        const [d1, d2] = [...dates].sort();
+        return [{ name: "change_detection", args: { place, from: d1, to: d2 } }];
+      }
+    }
+  }
 
   // 2-0) 분광지수(NDVI/NDWI/NBR) — 산불 분기보다 먼저. Sentinel-2 결정론 통계.
   //   장소가 있어야 bbox를 만들 수 있다(§4.3 환각 방지 — bbox는 지오코딩으로 시스템이 생성).
@@ -361,6 +410,42 @@ async function execTool(tc: ToolCall): Promise<string | null> {
     }
   }
 
+  if (name === "change_detection") {
+    const place = String(args.place ?? "").trim();
+    const from = String(args.from ?? "");
+    const to = String(args.to ?? "");
+    if (!place || !from || !to) return null;
+    const g = await geocodePlace(place);
+    if (!g) return null;
+    // 변화 탐지는 지수 6회 읽기라 비용이 커 AOI를 분광지수보다 좁게 잡는다(/api/change 상한 0.5°).
+    const pad = 0.06;
+    const bbox = [g[0] - pad, g[1] - pad, g[0] + pad, g[1] + pad].map((n) => n.toFixed(4)).join(",");
+    try {
+      const r = await fetch(`/api/change?bbox=${bbox}&from=${from}&to=${to}`);
+      const j = (await r.json()) as { ok?: boolean } & Omit<ChangeStats, "place">;
+      if (!j.ok) {
+        lastChange = null;
+        return null;
+      }
+      lastChange = { ...(j as unknown as ChangeStats), place };
+      // dNBR 유효비율이 더 높으면 dNBR을, 아니면 합성을 띄운다(볼 수 있는 쪽을 보여준다).
+      const layer = (lastChange.dnbr_valid_fraction ?? 0) >= (lastChange.valid_fraction ?? 0) ? "dnbr" : "composite";
+      useStore.getState().setSpectral({
+        index: layer === "dnbr" ? "dnbr" : "change",
+        place,
+        bbox: [g[0] - pad, g[1] - pad, g[0] + pad, g[1] + pad],
+        url: `/api/change/image?bbox=${bbox}&from=${from}&to=${to}&layer=${layer}`,
+        date: `${from} → ${to}`,
+        opacity: 0.8,
+      });
+      mapBus.flyTo(g[0], g[1], 9);
+      return `change_detection(${place}, ${from}→${to})`;
+    } catch {
+      lastChange = null;
+      return null;
+    }
+  }
+
   if (name === "search_scenes") {
     const place = String(args.place ?? "").trim();
     // bbox 는 지명을 지오코딩해 시스템이 만든다(§4.3 환각 방지). 지명 없으면 한반도 기본.
@@ -465,6 +550,22 @@ function replyFor(tc: ToolCall, done: string | null): string {
       .join(", ");
     return `${kind} 장면 ${lastStac.count}건을 찾았습니다. 최적 순: ${top}.`;
   }
+  if (tc.name === "change_detection") {
+    const c = lastChange;
+    if (!c) return "변화 탐지에 실패했습니다. 두 시점 모두 구름 적은 장면이 있어야 합니다.";
+    const head = `[${c.place}] 변화 탐지 — ${c.from.date} → ${c.to.date} · 분석 ${c.area_km2.toFixed(1)} km²`;
+    const comp = `합성 변화 평균 ${c.composite.mean.toFixed(3)} · 변화면적 ${(c.composite.changed_area_m2 / 1e6).toFixed(1)} km²`;
+    const lines = [head, comp];
+    if (c.dnbr) {
+      lines.push(`dNBR(연소) 평균 ${c.dnbr.mean.toFixed(3)} · 연소면적 ${(c.dnbr.burned_area_m2 / 1e6).toFixed(1)} km²`);
+      for (const x of c.dnbr.classes.filter((x) => x.percentage > 0).slice(0, 4)) {
+        lines.push(`· ${x.label} ${x.percentage.toFixed(1)}%`);
+      }
+    }
+    // ⚠️ 저품질을 숨기지 않는다 — 유효 픽셀이 적으면 수치가 편향됐을 수 있음을 그대로 전달.
+    if (c.warning) lines.push(`⚠️ ${c.warning}`);
+    return lines.join("\n");
+  }
   if (tc.name === "spectral_index") {
     const s = lastSpectral;
     if (!s) return "분광지수를 계산하지 못했습니다. 구름이 적은 기간이 없거나 장면을 찾지 못했을 수 있습니다.";
@@ -509,9 +610,20 @@ export async function runAgent(text: string) {
         if (done) tools.push(done);
         replies.push(replyFor(tc, done));
       }
+      let content = replies.join(" ");
+      // 수치가 많은 도구는 Qwen이 **서술만** 덧붙인다(계산 금지).
+      //   실측: temp 0.1 + num_ctx 고정 + "수치 변경 금지" 프롬프트로 5회 반복에서 지어낸 수치 0건.
+      //   그래도 라벨-수치 짝을 틀릴 여지는 있으므로 **원본 수치 블록을 아래에 그대로 남긴다**
+      //   → 서술이 어긋나도 사용자가 원본으로 검증 가능(설계원칙: 결정론 수치가 진실).
+      //   ⚠️ 품질 경고(유효 픽셀 부족 등)가 붙은 결과는 **서술하지 않는다** — 신뢰할 수 없는 수치를
+      //      매끄러운 문장으로 감싸면 경고를 읽지 않은 사용자가 사실로 받아들인다(실측에서 확인).
+      if (forced.some((t) => NARRATE_TOOLS.has(t.name)) && content.trim() && !content.includes("⚠️")) {
+        const narration = await narrate(content);
+        if (narration) content = `${narration}\n\n${content}`;
+      }
       useStore.getState().pushChat({
         role: "assistant",
-        content: replies.join(" "),
+        content,
         tools: tools.length ? tools : undefined,
       });
       return;

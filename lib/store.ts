@@ -46,9 +46,9 @@ type IncidentState = {
   status: "idle" | "loading" | "ready" | "error";
 };
 
-/** 분광지수 오버레이 — url은 /api/spectral/image, bbox[w,s,e,n]에 정합. */
+/** 지도 위 래스터 오버레이 — 분광지수(/api/spectral/image) 또는 변화탐지(/api/change/image). bbox[w,s,e,n]에 정합. */
 export type SpectralOverlay = {
-  index: "ndvi" | "ndwi" | "nbr";
+  index: "ndvi" | "ndwi" | "nbr" | "change" | "dnbr";
   place: string;
   bbox: [number, number, number, number];
   url: string;
