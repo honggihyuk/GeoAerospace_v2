@@ -126,7 +126,7 @@ type Band = { values: Float64Array; width: number; height: number; pixelM: numbe
  * 긴 변을 MAX_PX에 맞추고 **미터 기준 종횡비를 보존**한다(위도가 높을수록 경도 1°가 짧아지므로
  * 도(degree) 종횡비로 계산하면 찌그러진다).
  */
-function targetGrid(epsg: number, bbox: [number, number, number, number]): { w: number; h: number; pixelM: number } {
+function targetGrid(epsg: number, bbox: [number, number, number, number]): { w: number; h: number; pixelM: number; west: number; north: number; pxX: number; pxY: number } {
   const def = utmDef(epsg);
   const [x0, y0] = proj4("EPSG:4326", def, [bbox[0], bbox[1]]) as number[];
   const [x1, y1] = proj4("EPSG:4326", def, [bbox[2], bbox[3]]) as number[];
@@ -135,7 +135,20 @@ function targetGrid(epsg: number, bbox: [number, number, number, number]): { w: 
   const aspect = hM > 0 ? wM / hM : 1;
   const w = aspect >= 1 ? MAX_PX : Math.max(1, Math.round(MAX_PX * aspect));
   const h = aspect >= 1 ? Math.max(1, Math.round(MAX_PX / aspect)) : MAX_PX;
-  return { w, h, pixelM: wM / w };
+  const west = Math.min(x0, x1);
+  const north = Math.max(y0, y1);
+  return { w, h, pixelM: wM / w, west, north, pxX: wM / w, pxY: hM / h };
+}
+
+/** 광선 교차법 point-in-polygon (UTM 평면 좌표). */
+function inRing(x: number, y: number, ring: [number, number][]): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi + 1e-12) + xi) inside = !inside;
+  }
+  return inside;
 }
 
 /**
@@ -278,7 +291,7 @@ export type IndexGrid = {
 export async function computeIndexGrid(
   index: IndexName,
   bbox: [number, number, number, number],
-  opts: { date?: string; maxCloud?: number; days?: number; preferNearestDate?: boolean } = {}
+  opts: { date?: string; maxCloud?: number; days?: number; preferNearestDate?: boolean; polygon?: [number, number][][] } = {}
 ): Promise<IndexGrid> {
   const { a, b } = INDEX_BANDS[index];
   // ⚠️ days는 변화 탐지에서 중요하다 — 창이 넓으면 "이후" 날짜로 조회해도 사건 **이전** 장면이
@@ -297,9 +310,29 @@ export async function computeIndexGrid(
     scene.assets.scl ? readScl(scene.assets.scl, scene.epsg, bbox, tg.w, tg.h) : Promise.resolve(null),
   ]);
 
+  // 폴리곤 클리핑 — AOI 사각형 대신 **실제 경계 안쪽만** 남긴다(센트럴파크에서 맨해튼 거리 배제).
+  //   폴리곤을 UTM으로 한 번만 투영하고 픽셀 중심을 평면에서 판정한다(픽셀마다 역투영하면 느리다).
+  let polyMask: Uint8Array | null = null;
+  if (opts.polygon?.length) {
+    const def2 = utmDef(scene.epsg);
+    const rings = opts.polygon.map((r) => r.map(([lo, la]) => proj4("EPSG:4326", def2, [lo, la]) as [number, number]));
+    polyMask = new Uint8Array(tg.w * tg.h);
+    for (let j = 0; j < tg.h; j++) {
+      const y = tg.north - (j + 0.5) * tg.pxY;
+      for (let i = 0; i < tg.w; i++) {
+        const x = tg.west + (i + 0.5) * tg.pxX;
+        polyMask[j * tg.w + i] = rings.some((r) => inRing(x, y, r)) ? 1 : 0;
+      }
+    }
+  }
+
   const n = bandA.values.length;
   const values = new Float64Array(n);
   for (let i = 0; i < n; i++) {
+    if (polyMask && !polyMask[i]) {
+      values[i] = NaN; // 폴리곤 밖
+      continue;
+    }
     // 구름·그림자·눈은 지수를 심하게 왜곡하므로 먼저 버린다(SCL 없으면 기존대로 진행).
     if (scl && SCL_DROP.has(scl[i])) {
       values[i] = NaN;
@@ -318,7 +351,7 @@ export async function computeIndexGrid(
   let sclWaterPixels: number | null = null;
   if (scl) {
     let n6 = 0;
-    for (let i = 0; i < scl.length; i++) if (scl[i] === 6) n6++;
+    for (let i = 0; i < scl.length; i++) if (scl[i] === 6 && (!polyMask || polyMask[i])) n6++;
     sclWaterPixels = n6;
   }
   return { values, width: tg.w, height: tg.h, pixelM: tg.pixelM, scene, sclWaterPixels };
@@ -328,7 +361,7 @@ export async function computeIndexGrid(
 export async function computeIndex(
   index: IndexName,
   bbox: [number, number, number, number],
-  opts: { date?: string; maxCloud?: number; days?: number; preferNearestDate?: boolean } = {}
+  opts: { date?: string; maxCloud?: number; days?: number; preferNearestDate?: boolean; polygon?: [number, number][][] } = {}
 ): Promise<IndexStats> {
   const { formula } = INDEX_BANDS[index];
   const g = await computeIndexGrid(index, bbox, opts);

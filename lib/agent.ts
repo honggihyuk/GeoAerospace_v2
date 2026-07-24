@@ -386,7 +386,9 @@ async function execTool(tc: ToolCall): Promise<string | null> {
     const g = area.center;
     const bbox = area.bbox.map((n) => n.toFixed(4)).join(",");
     try {
-      const r = await fetch(`/api/spectral?index=${encodeURIComponent(index)}&bbox=${bbox}`);
+      // place를 넘기면 서버가 **실제 폴리곤으로 클리핑**한다(사각형보다 훨씬 정확 —
+      // 센트럴파크 실측: 면적 9.09→3.09km²(실제 3.41), 초고밀도 식생 55.4→90.2%).
+      const r = await fetch(`/api/spectral?index=${encodeURIComponent(index)}&place=${encodeURIComponent(place)}`);
       const j = (await r.json()) as { ok?: boolean; reason?: string } & Omit<SpectralStats, "place">;
       if (!j.ok) {
         lastSpectral = null;
