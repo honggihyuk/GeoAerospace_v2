@@ -29,7 +29,16 @@ const CITIES: Record<string, [number, number]> = {
 export function findCity(text: string): string | null {
   const t = text.toLowerCase();
   const keys = Object.keys(CITIES).sort((a, b) => b.length - a.length);
-  for (const k of keys) if (t.includes(k)) return k;
+  for (const k of keys) {
+    // ⚠️ ASCII 키는 **단어 경계**로 매칭한다 — 부분문자열이면 "Folsom Lake"의 'la'가 로스앤젤레스로,
+    //    "Florida"의 'la'가 잡히는 오인식이 난다(실측: Folsom Lake → la로 LA를 분석). 한글은
+    //    교착어라 경계 개념이 약하고 도시명이 부분일치로 문제되는 경우가 드물어 includes 유지.
+    if (/^[a-z0-9 ]+$/.test(k)) {
+      if (new RegExp(`\\b${k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(t)) return k;
+    } else if (t.includes(k)) {
+      return k;
+    }
+  }
   return null;
 }
 

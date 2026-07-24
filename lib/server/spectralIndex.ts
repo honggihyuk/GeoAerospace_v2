@@ -432,9 +432,9 @@ export async function compareIndex(
   bbox: [number, number, number, number],
   fromDate: string,
   toDate: string,
-  opts: { maxCloud?: number; windowDays?: number } = {}
+  opts: { maxCloud?: number; windowDays?: number; polygon?: [number, number][][] } = {}
 ): Promise<IndexCompare> {
-  const o = { maxCloud: opts.maxCloud ?? 30, days: opts.windowDays ?? 30, preferNearestDate: true };
+  const o = { maxCloud: opts.maxCloud ?? 30, days: opts.windowDays ?? 30, preferNearestDate: true, polygon: opts.polygon };
   const [a, b] = await Promise.all([
     computeIndex(index, bbox, { ...o, date: fromDate }),
     computeIndex(index, bbox, { ...o, date: toDate }),
