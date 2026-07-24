@@ -829,6 +829,54 @@ export default function MapCanvas() {
     };
   }, [spectral]);
 
+  // 광역 토지변화 스캔 — 1.28km 셀을 변화점수로 채색(녹→황→적). 네이티브 circle 레이어.
+  const regionChange = useStore((s) => s.regionChange);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const SRC = "regionchange-src";
+    const LYR = "regionchange-layer";
+    let applied = false;
+    const apply = () => {
+      if (map.getLayer(LYR)) map.removeLayer(LYR);
+      if (map.getSource(SRC)) map.removeSource(SRC);
+      if (!regionChange?.cells.length) return;
+      map.addSource(SRC, {
+        type: "geojson",
+        data: {
+          type: "FeatureCollection",
+          features: regionChange.cells.map((c) => ({
+            type: "Feature" as const,
+            geometry: { type: "Point" as const, coordinates: [c.cx, c.cy] },
+            properties: { score: c.score },
+          })),
+        },
+      });
+      map.addLayer({
+        id: LYR,
+        type: "circle",
+        source: SRC,
+        paint: {
+          // 1.28km 셀을 줌에 맞춰. 변화점수로 녹(안정)→황→적(변화).
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 6, 3, 11, 14],
+          "circle-color": [
+            "interpolate", ["linear"], ["get", "score"],
+            0, "#1a9850", 0.3, "#a6d96a", 0.5, "#fee08b", 0.7, "#fdae61", 1, "#d73027",
+          ],
+          "circle-opacity": ["interpolate", ["linear"], ["get", "score"], 0, 0.15, 0.5, 0.5, 1, 0.85],
+          "circle-stroke-width": 0,
+        },
+      });
+    };
+    const tryApply = () => { if (applied) return; try { apply(); applied = true; } catch { /* 스타일 미준비 */ } };
+    tryApply();
+    map.on("styledata", tryApply);
+    return () => {
+      map.off("styledata", tryApply);
+      try { if (map.getLayer(LYR)) map.removeLayer(LYR); if (map.getSource(SRC)) map.removeSource(SRC); } catch { /* 소거됨 */ }
+    };
+  }, [regionChange]);
+
   // 렌더 루프: 위성 전파 + 항공 dead-reckoning (30fps 게이트)
   useEffect(() => {
     const overlay = overlayRef.current;

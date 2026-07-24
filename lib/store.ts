@@ -56,6 +56,14 @@ export type SpectralOverlay = {
   opacity: number;
 };
 
+/** 광역 변화 스캔 셀 — cx/cy 중심, score 0~1(높을수록 변화). 1.28km 셀. */
+export type RegionChangeCells = {
+  place: string;
+  from: string;
+  to: string;
+  cells: { cx: number; cy: number; score: number }[];
+};
+
 export type SignalPoint = {
   id: string;
   region: string;
@@ -147,6 +155,9 @@ type AppState = {
   /** 분광지수 PNG 오버레이 — 에이전트가 지수를 계산하면 해당 bbox에 정합해 띄운다. */
   spectral: SpectralOverlay | null;
   setSpectral: (s: SpectralOverlay | null) => void;
+  /** 광역 토지변화 스캔 결과 셀(Clay 임베딩). 변화점수로 채색한 포인트 레이어. */
+  regionChange: RegionChangeCells | null;
+  setRegionChange: (r: RegionChangeCells | null) => void;
   /** GIBS 맥락영상 오버레이 (제안서 §4.7). null이면 표시 안 함. */
   gibs: { layerId: string; date: string; opacity: number } | null;
   setGibs: (g: { layerId: string; date: string; opacity?: number } | null) => void;
@@ -219,6 +230,8 @@ export const useStore = create<AppState>((set) => ({
   setSignal: (sig) => set((s) => ({ signal: { ...s.signal, ...sig } })),
   spectral: null,
   setSpectral: (spectral) => set({ spectral }),
+  regionChange: null,
+  setRegionChange: (regionChange) => set({ regionChange }),
   gibs: null,
   setGibs: (g) => set({ gibs: g ? { opacity: 0.85, ...g } : null }),
   gk2a: {

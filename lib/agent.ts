@@ -59,6 +59,18 @@ type CompareStats = {
 };
 let lastCompare: CompareStats | null = null;
 
+/** scan_region_change(Clay 임베딩 광역 변화) 결과 보관. */
+type RegionScanStats = {
+  place: string; from: string; to: string; joined_cells: number; cell_km: number;
+  cosine_median: number; changed_cells: number; changed_area_km2: number;
+  top: { cx: number; cy: number; score: number; sim: number }[];
+  cells: { cx: number; cy: number; score: number }[];
+};
+let lastRegionScan: RegionScanStats | null = null;
+
+// 광역 변화 스캔 의도 — "광역/전역/스캔" 또는 연 단위 변화 + 장소. 월 정밀 아닌 연 규모.
+const REGIONSCAN_RE = /광역|전역|스캔|scan|토지\s*변화|개발\s*추이|도시화|장기\s*변화/i;
+
 // 변화 탐지 의도 — 두 날짜(YYYY-MM-DD)가 있어야 성립한다(사건 전/후를 시스템이 임의로 못 정함).
 const CHANGE_RE = /변화|전후|피해\s*(면적|규모|정도)|dnbr|연소\s*심각도|비교/i;
 
@@ -111,6 +123,20 @@ function resolveIntent(msg: string): ToolCall[] | null {
 
   // 2) 레이어 토글 (켜/끄 동사가 있을 때만)
   const onOff = /(켜|표시|보이게|활성|on)/.test(msg) ? true : /(꺼|끄|숨|비활성|제거|off)/.test(msg) ? false : null;
+
+  // 2-000) 광역 토지변화 스캔(Clay 임베딩) — 연도 2개(YYYY) + 광역/스캔 의도. 픽셀 탐지보다 먼저.
+  {
+    const years = msg.match(/(20\d{2})/g) ?? [];
+    if (REGIONSCAN_RE.test(msg) && years.length >= 2) {
+      const cityHit = findCity(msg);
+      const near = msg.match(/([가-힣A-Za-z][가-힣A-Za-z ]{1,24}?)\s*(?:의|지역|일대|토지|변화|개발|도시화)/);
+      const place = cityHit ?? (near && !NONPLACE.test(near[1]) ? near[1].trim() : undefined);
+      if (place) {
+        const ys = [...years].map(Number).sort((a, b) => a - b);
+        return [{ name: "scan_region_change", args: { place, fromY: ys[0], toY: ys[ys.length - 1] } }];
+      }
+    }
+  }
 
   // 2-00) 날짜 2개(YYYY-MM-DD)가 명시된 두 시점 질의 — 분광지수보다 먼저.
   //   ⚠️ 라우팅 충돌 해소: **특정 지수(NDVI/NDWI)를 명시하면 지수 면적 비교(compare_index)**,
@@ -464,6 +490,31 @@ async function execTool(tc: ToolCall): Promise<string | null> {
     }
   }
 
+  if (name === "scan_region_change") {
+    const place = String(args.place ?? "").trim();
+    const fromY = Number(args.fromY), toY = Number(args.toY);
+    if (!place || !fromY || !toY) return null;
+    // 광역 스캔이라 넓은 AOI를 잡는다(상한 5°). peak-season 7월(북반구)로 고정.
+    const area = await geocodeArea(place, 3.0, 0.3);
+    if (!area) return null;
+    const bbox = area.bbox.map((n) => n.toFixed(4)).join(",");
+    try {
+      const r = await fetch(`/api/region-change?bbox=${bbox}&from=${fromY}-07&to=${toY}-07`);
+      const j = (await r.json()) as { ok?: boolean } & Omit<RegionScanStats, "place">;
+      if (!j.ok) {
+        lastRegionScan = null;
+        return null;
+      }
+      lastRegionScan = { ...(j as unknown as RegionScanStats), place };
+      useStore.getState().setRegionChange({ place, from: `${fromY}-07`, to: `${toY}-07`, cells: lastRegionScan.cells });
+      mapBus.flyTo(area.center[0], area.center[1], 8);
+      return `scan_region_change(${place}, ${fromY}→${toY})`;
+    } catch {
+      lastRegionScan = null;
+      return null;
+    }
+  }
+
   if (name === "compare_index") {
     const index = String(args.index ?? "ndwi");
     const place = String(args.place ?? "").trim();
@@ -618,6 +669,18 @@ function replyFor(tc: ToolCall, done: string | null): string {
     }
     // ⚠️ 저품질을 숨기지 않는다 — 유효 픽셀이 적으면 수치가 편향됐을 수 있음을 그대로 전달.
     if (c.warning) lines.push(`⚠️ ${c.warning}`);
+    return lines.join("\n");
+  }
+  if (tc.name === "scan_region_change") {
+    const c = lastRegionScan;
+    if (!c) return "광역 변화 스캔에 실패했습니다. 해당 지역·연도의 Clay 임베딩(2017~2026 월단위)이 있어야 합니다.";
+    const lines = [
+      `[${c.place}] 광역 토지변화 스캔 — ${c.from} → ${c.to} · ${c.cell_km}km 셀 ${c.joined_cells}개`,
+      `변화 셀 ${c.changed_cells}개 · 변화면적 약 ${c.changed_area_km2} km² (코사인 중앙값 ${c.cosine_median})`,
+    ];
+    // 변화 핫스팟 좌표 상위 몇 개(지도에서 어디를 볼지).
+    for (const t of c.top.slice(0, 4)) lines.push(`· 핫스팟 @ ${t.cy.toFixed(3)}, ${t.cx.toFixed(3)} (변화점수 ${t.score.toFixed(2)})`);
+    lines.push("⚠️ Clay 임베딩 상대 변화(적응형 임계값). 절대 면적이 아니라 '이 지역 내 상대적으로 많이 변한 곳'입니다.");
     return lines.join("\n");
   }
   if (tc.name === "compare_index") {

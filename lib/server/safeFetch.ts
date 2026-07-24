@@ -22,6 +22,7 @@ const ALLOW_HOSTS = new Set([
   "openapi.its.go.kr", // ITS 국가교통정보센터 — 전국 도로 CCTV(좌표+스트림), ITS_API_KEY 필요
   "www.utic.go.kr", // 경찰청 도시교통정보센터(UTIC) — 실시간 돌발정보(imsOpenData), 소통지도(telMap). key+IP 인증(https 지원)
   "sentinel-cogs.s3.us-west-2.amazonaws.com", // Sentinel-2 L2A COG 밴드(공개) — 분광지수 NDVI/NDWI/NBR
+  "data.source.coop", // LGND Clay v1.5 지구관측 임베딩(GeoParquet, 공개) — 광역 토지변화 스캔
 ]);
 
 /**
