@@ -46,6 +46,16 @@ type IncidentState = {
   status: "idle" | "loading" | "ready" | "error";
 };
 
+/** 분광지수 오버레이 — url은 /api/spectral/image, bbox[w,s,e,n]에 정합. */
+export type SpectralOverlay = {
+  index: "ndvi" | "ndwi" | "nbr";
+  place: string;
+  bbox: [number, number, number, number];
+  url: string;
+  date: string;
+  opacity: number;
+};
+
 export type SignalPoint = {
   id: string;
   region: string;
@@ -134,6 +144,9 @@ type AppState = {
   setIncident: (i: Partial<IncidentState>) => void;
   signal: SignalState;
   setSignal: (s: Partial<SignalState>) => void;
+  /** 분광지수 PNG 오버레이 — 에이전트가 지수를 계산하면 해당 bbox에 정합해 띄운다. */
+  spectral: SpectralOverlay | null;
+  setSpectral: (s: SpectralOverlay | null) => void;
   /** GIBS 맥락영상 오버레이 (제안서 §4.7). null이면 표시 안 함. */
   gibs: { layerId: string; date: string; opacity: number } | null;
   setGibs: (g: { layerId: string; date: string; opacity?: number } | null) => void;
@@ -204,6 +217,8 @@ export const useStore = create<AppState>((set) => ({
   setIncident: (i) => set((s) => ({ incident: { ...s.incident, ...i } })),
   signal: { points: [], source: "", configured: true, reason: null, status: "idle" },
   setSignal: (sig) => set((s) => ({ signal: { ...s.signal, ...sig } })),
+  spectral: null,
+  setSpectral: (spectral) => set({ spectral }),
   gibs: null,
   setGibs: (g) => set({ gibs: g ? { opacity: 0.85, ...g } : null }),
   gk2a: {

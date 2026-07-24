@@ -344,6 +344,15 @@ async function execTool(tc: ToolCall): Promise<string | null> {
         return null;
       }
       lastSpectral = { ...(j as unknown as SpectralStats), place };
+      // 같은 bbox의 컬러맵 PNG를 오버레이로 — 수치와 그림을 함께 본다.
+      useStore.getState().setSpectral({
+        index: index as "ndvi" | "ndwi" | "nbr",
+        place,
+        bbox: [g[0] - pad, g[1] - pad, g[0] + pad, g[1] + pad],
+        url: `/api/spectral/image?index=${encodeURIComponent(index)}&bbox=${bbox}`,
+        date: lastSpectral.scene?.date ?? "",
+        opacity: 0.75,
+      });
       mapBus.flyTo(g[0], g[1], 9.5); // 분석 영역이 보이도록 확대
       return `spectral_index(${index}, ${place})`;
     } catch {

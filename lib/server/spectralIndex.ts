@@ -180,13 +180,22 @@ const CLASS_ORDER: Record<IndexName, string[]> = {
   nbr: ["unburned", "moderate_severity", "high_severity"],
 };
 
-/** bbox[w,s,e,n] 영역의 분광지수 통계. date 미지정 시 오늘 기준 과거 60일. */
-export async function computeIndex(
+/** 픽셀별 지수 격자. 무효 픽셀은 NaN — 통계·PNG 렌더가 공유한다. */
+export type IndexGrid = {
+  values: Float64Array;
+  width: number;
+  height: number;
+  pixelM: number;
+  scene: Scene;
+};
+
+/** bbox 영역의 지수 격자 계산(통계·이미지 공통 경로). date 미지정 시 오늘 기준 과거 60일. */
+export async function computeIndexGrid(
   index: IndexName,
   bbox: [number, number, number, number],
   opts: { date?: string; maxCloud?: number } = {}
-): Promise<IndexStats> {
-  const { a, b, formula } = INDEX_BANDS[index];
+): Promise<IndexGrid> {
+  const { a, b } = INDEX_BANDS[index];
   const features = await searchScenes(bbox, opts.date, opts.maxCloud ?? 30);
   if (!features.length) throw new Error("조건에 맞는 Sentinel-2 장면 없음(기간·구름 조건 확인)");
   const scene = pickScene(features, bbox, [a, b]);
@@ -196,16 +205,37 @@ export async function computeIndex(
   const bandB = await readBand(scene.assets[b], scene.epsg, bbox, { w: bandA.width, h: bandA.height });
 
   const n = bandA.values.length;
-  const vals: number[] = [];
-  const counts = new Map<string, number>();
+  const values = new Float64Array(n);
   for (let i = 0; i < n; i++) {
     const va = bandA.values[i], vb = bandB.values[i];
-    if (Number.isNaN(va) || Number.isNaN(vb)) continue;
     const denom = va + vb;
-    if (denom <= MIN_DENOM) continue; // 두 밴드 모두 사실상 0(그림자·nodata 잔여) → 지수 의미 없음
-    let v = (va - vb) / (denom + EPS);
-    if (!Number.isFinite(v)) continue;
-    v = Math.max(-1, Math.min(1, v)); // 수치 오차 대비 최종 가드
+    // 무효(nodata·그림자·분모 0)는 NaN — 통계에서 제외되고 PNG에선 투명해진다.
+    if (Number.isNaN(va) || Number.isNaN(vb) || denom <= MIN_DENOM) {
+      values[i] = NaN;
+      continue;
+    }
+    const v = (va - vb) / (denom + EPS);
+    values[i] = Number.isFinite(v) ? Math.max(-1, Math.min(1, v)) : NaN;
+  }
+  return { values, width: bandA.width, height: bandA.height, pixelM: bandA.pixelM, scene };
+}
+
+/** bbox[w,s,e,n] 영역의 분광지수 통계. */
+export async function computeIndex(
+  index: IndexName,
+  bbox: [number, number, number, number],
+  opts: { date?: string; maxCloud?: number } = {}
+): Promise<IndexStats> {
+  const { formula } = INDEX_BANDS[index];
+  const g = await computeIndexGrid(index, bbox, opts);
+  const scene = g.scene;
+  const bandA = { width: g.width, height: g.height, pixelM: g.pixelM };
+
+  const vals: number[] = [];
+  const counts = new Map<string, number>();
+  for (let i = 0; i < g.values.length; i++) {
+    const v = g.values[i];
+    if (Number.isNaN(v)) continue;
     vals.push(v);
     const c = classify(index, v);
     counts.set(c, (counts.get(c) ?? 0) + 1);

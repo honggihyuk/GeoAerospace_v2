@@ -160,6 +160,14 @@ export default function MapCanvas() {
     });
     mapRef.current = map;
     mapBus.set(map); // 에이전트가 지도를 조작할 수 있도록 연결 (P4)
+    // maplibre는 소스/타일 오류를 예외로 던지지 않고 error 이벤트로만 알린다 →
+    // 붙여두지 않으면 "레이어가 조용히 안 뜨는" 버그의 원인을 못 찾는다(실제로 겪음).
+    map.on("error", (e) => console.error("[maplibre]", (e as { error?: Error }).error?.message ?? e));
+    // 개발 진단용 노출. ⚠️ StrictMode 이중 마운트로 **파괴된 인스턴스**를 잡으면 오진하므로
+    //    아래 cleanup에서 자기 자신일 때만 지운다(살아있는 맵만 남게).
+    if (process.env.NODE_ENV === "development") {
+      (window as unknown as { __map?: maplibregl.Map }).__map = map;
+    }
 
     const overlay = new MapboxOverlay({ interleaved: true, layers: [] });
     overlayRef.current = overlay;
@@ -332,6 +340,8 @@ export default function MapCanvas() {
     return () => {
       unsubCube();
       mapBus.set(null);
+      const w = window as unknown as { __map?: maplibregl.Map };
+      if (w.__map === map) delete w.__map; // 파괴된 인스턴스가 진단창구에 남지 않게
       map.remove();
       mapRef.current = null;
       overlayRef.current = null;
@@ -757,6 +767,67 @@ export default function MapCanvas() {
       }
     };
   }, [signalState, signalOn]);
+
+  // 분광지수 오버레이 — 서버가 만든 컬러맵 PNG를 bbox에 정합해 올린다(TiTiler 불필요).
+  //   무효 픽셀은 PNG에서 투명이라 배경 지도가 비친다.
+  const spectral = useStore((s) => s.spectral);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const SRC = "spectral-src";
+    const LYR = "spectral-layer";
+
+    const apply = () => {
+      if (map.getLayer(LYR)) map.removeLayer(LYR);
+      if (map.getSource(SRC)) map.removeSource(SRC);
+      if (!spectral) return;
+      const [w, s, e, n] = spectral.bbox;
+      map.addSource(SRC, {
+        type: "image",
+        url: spectral.url,
+        // 좌상 → 우상 → 우하 → 좌하 (maplibre image 소스 규약)
+        coordinates: [
+          [w, n],
+          [e, n],
+          [e, s],
+          [w, s],
+        ],
+      });
+      map.addLayer({
+        id: LYR,
+        type: "raster",
+        source: SRC,
+        paint: { "raster-opacity": spectral.opacity, "raster-fade-duration": 200 },
+      });
+    };
+
+    // ⚠️ 여기서 `isStyleLoaded()`로 가드하면 안 된다 — 그 함수는 "모든 **소스**까지 로드"를 뜻해서
+    //    지형·베이스맵 타일이 계속 스트리밍되는 globe에서는 사실상 true가 되지 않는다(실측 16초 후에도 false).
+    //    반면 addSource가 실제로 요구하는 건 스타일 스펙 로드뿐이다. 또 `once("style.load")`는 이 효과가
+    //    늦게 실행되면 이미 지나가 영원히 오지 않는다. → **시도하고, 실패하면 styledata마다 재시도**.
+    let applied = false;
+    const tryApply = () => {
+      if (applied) return;
+      try {
+        apply();
+        applied = true;
+      } catch {
+        /* 스타일 미준비 — 다음 styledata에서 재시도 */
+      }
+    };
+    tryApply();
+    map.on("styledata", tryApply);
+
+    return () => {
+      map.off("styledata", tryApply);
+      try {
+        if (map.getLayer(LYR)) map.removeLayer(LYR);
+        if (map.getSource(SRC)) map.removeSource(SRC);
+      } catch {
+        /* 스타일 소거됨 */
+      }
+    };
+  }, [spectral]);
 
   // 렌더 루프: 위성 전파 + 항공 dead-reckoning (30fps 게이트)
   useEffect(() => {
