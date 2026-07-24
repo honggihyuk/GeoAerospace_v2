@@ -81,8 +81,12 @@ async function searchScenes(bbox: [number, number, number, number], dateStr: str
   return [];
 }
 
-/** 커버리지 최대 → 구름 최소 순. 같은 AOI면 항상 같은 장면을 고른다. */
-function pickScene(features: Feature[], bbox: [number, number, number, number], need: string[]): Scene | null {
+/**
+ * 커버리지 최대 → (nearDate 지정 시)목표일 근접 → 구름 최소 순. 같은 입력이면 항상 같은 장면.
+ * ⚠️ nearDate는 변화 탐지에 필수다 — 구름만 보고 고르면 "사건 직후"를 원해도 몇 주 전 장면이
+ *    선택돼 계절 변화가 사건 신호를 덮는다(실측: 2월 vs 4월 비교에서 개엽이 연소를 상쇄).
+ */
+function pickScene(features: Feature[], bbox: [number, number, number, number], need: string[], nearDate?: string): Scene | null {
   const cands = features
     .filter((f) => need.every((b) => f.assets?.[b]?.href))
     .map((f) => ({
@@ -95,11 +99,72 @@ function pickScene(features: Feature[], bbox: [number, number, number, number], 
     }))
     .filter((s) => s.epsg > 0 && s.coverage > 0);
   if (!cands.length) return null;
-  cands.sort((x, y) => y.coverage - x.coverage || (x.cloud ?? 101) - (y.cloud ?? 101) || x.id.localeCompare(y.id));
+  const target = nearDate ? new Date(`${nearDate}T00:00:00Z`).getTime() : 0;
+  const gap = (d: string) => (nearDate ? Math.abs(new Date(`${d}T00:00:00Z`).getTime() - target) : 0);
+  cands.sort(
+    (x, y) =>
+      y.coverage - x.coverage ||
+      gap(x.date) - gap(y.date) ||
+      (x.cloud ?? 101) - (y.cloud ?? 101) ||
+      x.id.localeCompare(y.id)
+  );
   return cands[0];
 }
 
 type Band = { values: Float64Array; width: number; height: number; pixelM: number };
+
+/**
+ * AOI(bbox)만으로 출력 격자를 정한다 — 밴드 해상도와 무관하게 항상 동일.
+ * 긴 변을 MAX_PX에 맞추고 **미터 기준 종횡비를 보존**한다(위도가 높을수록 경도 1°가 짧아지므로
+ * 도(degree) 종횡비로 계산하면 찌그러진다).
+ */
+function targetGrid(epsg: number, bbox: [number, number, number, number]): { w: number; h: number; pixelM: number } {
+  const def = utmDef(epsg);
+  const [x0, y0] = proj4("EPSG:4326", def, [bbox[0], bbox[1]]) as number[];
+  const [x1, y1] = proj4("EPSG:4326", def, [bbox[2], bbox[3]]) as number[];
+  const wM = Math.abs(x1 - x0);
+  const hM = Math.abs(y1 - y0);
+  const aspect = hM > 0 ? wM / hM : 1;
+  const w = aspect >= 1 ? MAX_PX : Math.max(1, Math.round(MAX_PX * aspect));
+  const h = aspect >= 1 ? Math.max(1, Math.round(MAX_PX / aspect)) : MAX_PX;
+  return { w, h, pixelM: wM / w };
+}
+
+/**
+ * SCL(Scene Classification Layer)에서 **버릴** 클래스.
+ *   0 nodata · 1 saturated · 3 cloud shadow · 8/9 cloud(중/고확률) · 10 thin cirrus · 11 snow/ice
+ * ⚠️ 특히 **눈(11)** 이 중요하다 — 눈은 SWIR2가 극히 낮아 NBR이 0.8대로 치솟는다. 마스킹하지 않으면
+ *    "적설 → 융설"이 dNBR에서 **식생 회복으로 오독**된다(실측: 울진 3/15 장면 NBR 중앙값 0.82,
+ *    dNBR 평균 −0.35로 연소 신호가 완전히 뒤집혔다).
+ */
+// ⚠️ 2(dark/지형그늘)는 **넣지 않는다** — 겨울 산악(저태양고도) 장면은 그늘이 40%에 달해
+//    유효면적이 0.08km²까지 붕괴한다(실측). 어두운 픽셀의 가짜 지수값은 음수 반사율을
+//    NaN으로 버리는 처리(readBand)가 이미 제거하므로 여기서 또 버릴 필요가 없다.
+const SCL_DROP = new Set([0, 1, 3, 8, 9, 10, 11]);
+
+/** SCL 밴드(20m, 범주형)를 목표 격자로 읽는다. 범주형이라 최근접 리샘플이어야 한다(geotiff 기본값). */
+async function readScl(asset: StacAsset, epsg: number, bbox: [number, number, number, number], w: number, h: number): Promise<Uint8Array | null> {
+  try {
+    if (!isAllowedHost(asset.href)) return null;
+    const def = utmDef(epsg);
+    const [x0, y0] = proj4("EPSG:4326", def, [bbox[0], bbox[1]]) as number[];
+    const [x1, y1] = proj4("EPSG:4326", def, [bbox[2], bbox[3]]) as number[];
+    const tiff = await fromUrl(asset.href);
+    const img = await tiff.getImage();
+    const [ox, oy] = img.getOrigin();
+    const [rx, ry] = img.getResolution();
+    const W = img.getWidth(), H = img.getHeight();
+    const cl = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+    const left = cl(Math.floor((Math.min(x0, x1) - ox) / rx), 0, W - 1);
+    const right = cl(Math.ceil((Math.max(x0, x1) - ox) / rx), left + 1, W);
+    const top = cl(Math.floor((Math.max(y0, y1) - oy) / ry), 0, H - 1);
+    const bottom = cl(Math.ceil((Math.min(y0, y1) - oy) / ry), top + 1, H);
+    const rasters = (await img.readRasters({ window: [left, top, right, bottom], width: w, height: h })) as unknown as ArrayLike<number>[];
+    return Uint8Array.from(rasters[0] as unknown as number[]);
+  } catch {
+    return null; // SCL 없거나 실패 → 마스킹 없이 진행(기존 동작)
+  }
+}
 
 /**
  * COG에서 AOI 창만 Range 요청으로 읽는다(전체 밴드 다운로드 없음).
@@ -126,6 +191,8 @@ async function readBand(asset: StacAsset, epsg: number, bbox: [number, number, n
   const bottom = cl(Math.ceil((south - oy) / ry), top + 1, H);
 
   const pxW = right - left, pxH = bottom - top;
+  // ⚠️ 출력 격자는 **호출부가 AOI 기준으로 정해 강제**한다. 밴드 해상도(10m/20m)에 따라 각자
+  //    정하면 NDVI(512x512)와 NBR(443x512)처럼 격자가 어긋나 변화 탐지에서 픽셀이 대응하지 않는다.
   const outW = force?.w ?? Math.max(1, Math.min(MAX_PX, pxW));
   const outH = force?.h ?? Math.max(1, Math.min(MAX_PX, pxH));
 
@@ -145,10 +212,13 @@ async function readBand(asset: StacAsset, epsg: number, bbox: [number, number, n
       values[i] = NaN;
       continue;
     }
-    // ⚠️ 오프셋(-0.1) 적용 시 어두운 픽셀(그림자·수면)은 반사율이 음수가 된다.
-    //    음수를 그대로 두면 분모(a+b)가 0을 교차해 지수가 [-1,1]을 벗어나 폭발한다(실측 -1197).
-    //    반사율은 물리적으로 ≥0이므로 0으로 클램프하면 |(a-b)/(a+b)| ≤ 1 이 수학적으로 보장된다.
-    values[i] = Math.max(0, dn * scale + offset);
+    // ⚠️ 오프셋(-0.1) 적용 시 어두운 픽셀(지형그늘 등)은 반사율이 음수가 된다.
+    //    ① 그대로 두면 분모(a+b)가 0을 교차해 지수가 폭발한다(실측 -1197).
+    //    ② 0으로 클램프해도 안 된다 — 한 밴드만 0이 되면 (a-0)/(a+0)=±1 이라는 **가짜 최대값**이
+    //       대량 생성된다(실측: 지형그늘 37.7%인 장면에서 NBR 중앙값 0.998로 연소 신호가 뒤집힘).
+    //    → 음수 반사율은 물리적으로 무효한 관측이므로 **NaN으로 버린다**.
+    const refl = dn * scale + offset;
+    values[i] = refl > 0 ? refl : NaN;
   }
   // 데시메이션 반영 유효 픽셀 크기(면적 산출용)
   const pixelM = Math.abs(rx) * (pxW / outW);
@@ -193,20 +263,33 @@ export type IndexGrid = {
 export async function computeIndexGrid(
   index: IndexName,
   bbox: [number, number, number, number],
-  opts: { date?: string; maxCloud?: number } = {}
+  opts: { date?: string; maxCloud?: number; days?: number; preferNearestDate?: boolean } = {}
 ): Promise<IndexGrid> {
   const { a, b } = INDEX_BANDS[index];
-  const features = await searchScenes(bbox, opts.date, opts.maxCloud ?? 30);
+  // ⚠️ days는 변화 탐지에서 중요하다 — 창이 넓으면 "이후" 날짜로 조회해도 사건 **이전** 장면이
+  //    선택돼 변화가 0으로 나온다. 호출부가 사건 전후를 확실히 가르도록 좁힐 수 있게 열어둔다.
+  const features = await searchScenes(bbox, opts.date, opts.maxCloud ?? 30, opts.days ?? 60);
   if (!features.length) throw new Error("조건에 맞는 Sentinel-2 장면 없음(기간·구름 조건 확인)");
-  const scene = pickScene(features, bbox, [a, b]);
+  const scene = pickScene(features, bbox, [a, b], opts.preferNearestDate ? opts.date : undefined);
   if (!scene) throw new Error(`장면에 필요한 밴드(${a}, ${b})가 없음`);
 
-  const bandA = await readBand(scene.assets[a], scene.epsg, bbox);
-  const bandB = await readBand(scene.assets[b], scene.epsg, bbox, { w: bandA.width, h: bandA.height });
+  // AOI 기준 공통 격자 — 밴드 해상도·지수 종류와 무관하게 항상 같은 크기라야
+  // 두 시점/여러 지수의 픽셀이 지리적으로 대응한다(변화 탐지의 전제).
+  const tg = targetGrid(scene.epsg, bbox);
+  const [bandA, bandB, scl] = await Promise.all([
+    readBand(scene.assets[a], scene.epsg, bbox, { w: tg.w, h: tg.h }),
+    readBand(scene.assets[b], scene.epsg, bbox, { w: tg.w, h: tg.h }),
+    scene.assets.scl ? readScl(scene.assets.scl, scene.epsg, bbox, tg.w, tg.h) : Promise.resolve(null),
+  ]);
 
   const n = bandA.values.length;
   const values = new Float64Array(n);
   for (let i = 0; i < n; i++) {
+    // 구름·그림자·눈은 지수를 심하게 왜곡하므로 먼저 버린다(SCL 없으면 기존대로 진행).
+    if (scl && SCL_DROP.has(scl[i])) {
+      values[i] = NaN;
+      continue;
+    }
     const va = bandA.values[i], vb = bandB.values[i];
     const denom = va + vb;
     // 무효(nodata·그림자·분모 0)는 NaN — 통계에서 제외되고 PNG에선 투명해진다.
@@ -217,7 +300,7 @@ export async function computeIndexGrid(
     const v = (va - vb) / (denom + EPS);
     values[i] = Number.isFinite(v) ? Math.max(-1, Math.min(1, v)) : NaN;
   }
-  return { values, width: bandA.width, height: bandA.height, pixelM: bandA.pixelM, scene };
+  return { values, width: tg.w, height: tg.h, pixelM: tg.pixelM, scene };
 }
 
 /** bbox[w,s,e,n] 영역의 분광지수 통계. */
