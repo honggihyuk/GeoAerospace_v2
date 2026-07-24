@@ -19,6 +19,28 @@ let lastStac: { count: number; collection: string; scenes: { date: string; cloud
 /** describe_region 브리핑 결과를 replyFor로 넘기기 위한 임시 보관. */
 let lastRegion: { answer: string; sources: string[] } | null = null;
 
+/** spectral_index(NDVI/NDWI/NBR) 통계를 replyFor로 넘기기 위한 임시 보관. */
+type SpectralStats = {
+  index: string;
+  place: string;
+  scene: { date: string; cloud: number | null; coverage_pct: number };
+  grid: { pixel_m: number };
+  area_km2: number;
+  mean: number;
+  median: number;
+  min: number;
+  max: number;
+  classes: { name: string; label: string; area_m2: number; percentage: number }[];
+};
+let lastSpectral: SpectralStats | null = null;
+
+// 분광지수 의도 — 반드시 산불(FIRMS) 분기보다 먼저 판정한다.
+//   "산불 보여줘"는 FIRMS 포인트지만 "산불 피해 면적"은 NBR(연소 정도) 이므로,
+//   NBR 트리거는 피해/흔적/연소처럼 **명시적 단어**가 있을 때만 걸리게 좁힌다.
+const NDVI_RE = /ndvi|식생|녹지|초목|산림\s*(면적|비율|분포)|숲\s*(면적|비율|분포)/i;
+const NDWI_RE = /ndwi|수체|수면|물\s*(면적|비율)|호수\s*면적|저수(량|율)/i;
+const NBR_RE = /nbr|연소\s*(지수|정도|도)|화상|소실\s*면적|산불\s*(피해|흔적|자국)|탄\s*(정도|면적)/i;
+
 const ANALYSIS_RE = /설명|해석|분석|어디로|어느 방향|확산|규모|번지|얼마나 심각|판단|보이는|알려줘/;
 const IMAGERY_RE = /위성\s*영상|영상으로|맥락\s*영상|연기|스모크|트루컬러|truecolor|bands\s*721|실제\s*모습|가시광/i;
 const NONPLACE = /궤도|지상\s*궤적|위성|항공|비행|레이어|지형|영상|화재|산불|고도|속도|주기/;
@@ -43,6 +65,18 @@ function resolveIntent(msg: string): ToolCall[] | null {
 
   // 2) 레이어 토글 (켜/끄 동사가 있을 때만)
   const onOff = /(켜|표시|보이게|활성|on)/.test(msg) ? true : /(꺼|끄|숨|비활성|제거|off)/.test(msg) ? false : null;
+
+  // 2-0) 분광지수(NDVI/NDWI/NBR) — 산불 분기보다 먼저. Sentinel-2 결정론 통계.
+  //   장소가 있어야 bbox를 만들 수 있다(§4.3 환각 방지 — bbox는 지오코딩으로 시스템이 생성).
+  {
+    const index = NBR_RE.test(msg) ? "nbr" : NDWI_RE.test(msg) ? "ndwi" : NDVI_RE.test(msg) ? "ndvi" : null;
+    if (index) {
+      const cityHit = findCity(msg);
+      const near = msg.match(/([가-힣A-Za-z][가-힣A-Za-z ]{1,20}?)\s*(?:의|지역|일대|시|근처)?\s*(?:식생|녹지|초목|산림|숲|수체|수면|물|호수|저수|연소|화상|소실|산불|ndvi|ndwi|nbr)/i);
+      const place = cityHit ?? (near && !NONPLACE.test(near[1]) ? near[1].trim() : undefined);
+      if (place) return [{ name: "spectral_index", args: { index, place } }];
+    }
+  }
 
   // 2-a) 산불은 토글보다 먼저 판정한다.
   // "표시해줘"의 '표시'가 켜기 동사라, 아래 layerMap에 fires를 넣으면
@@ -293,6 +327,31 @@ async function execTool(tc: ToolCall): Promise<string | null> {
     } else st.toggleLayer(layer);
     return `toggle_layer(${layer}${typeof want === "boolean" ? `=${want}` : ""})`;
   }
+  if (name === "spectral_index") {
+    const index = String(args.index ?? "ndvi");
+    const place = String(args.place ?? "").trim();
+    if (!place) return null;
+    const g = await geocodePlace(place);
+    if (!g) return null;
+    // bbox는 시스템이 생성 — 0.1°×0.1°(≈11km) 로 /api/spectral 의 1° 상한 안에 든다.
+    const pad = 0.05;
+    const bbox = [g[0] - pad, g[1] - pad, g[0] + pad, g[1] + pad].map((n) => n.toFixed(4)).join(",");
+    try {
+      const r = await fetch(`/api/spectral?index=${encodeURIComponent(index)}&bbox=${bbox}`);
+      const j = (await r.json()) as { ok?: boolean; reason?: string } & Omit<SpectralStats, "place">;
+      if (!j.ok) {
+        lastSpectral = null;
+        return null;
+      }
+      lastSpectral = { ...(j as unknown as SpectralStats), place };
+      mapBus.flyTo(g[0], g[1], 9.5); // 분석 영역이 보이도록 확대
+      return `spectral_index(${index}, ${place})`;
+    } catch {
+      lastSpectral = null;
+      return null;
+    }
+  }
+
   if (name === "search_scenes") {
     const place = String(args.place ?? "").trim();
     // bbox 는 지명을 지오코딩해 시스템이 만든다(§4.3 환각 방지). 지명 없으면 한반도 기본.
@@ -396,6 +455,20 @@ function replyFor(tc: ToolCall, done: string | null): string {
       .map((s) => `${s.date}${s.cloud != null ? ` (구름 ${s.cloud}%)` : ""}`)
       .join(", ");
     return `${kind} 장면 ${lastStac.count}건을 찾았습니다. 최적 순: ${top}.`;
+  }
+  if (tc.name === "spectral_index") {
+    const s = lastSpectral;
+    if (!s) return "분광지수를 계산하지 못했습니다. 구름이 적은 기간이 없거나 장면을 찾지 못했을 수 있습니다.";
+    const KO: Record<string, string> = { ndvi: "NDVI 식생지수", ndwi: "NDWI 수분지수", nbr: "NBR 연소지수" };
+    const cloud = s.scene.cloud != null ? ` · 구름 ${s.scene.cloud.toFixed(1)}%` : "";
+    const head = `[${s.place}] ${KO[s.index] ?? s.index} — Sentinel-2 ${s.scene.date}${cloud}`;
+    const body = `분석 ${s.area_km2.toFixed(2)} km² (${s.grid.pixel_m}m 격자) · 평균 ${s.mean.toFixed(3)} · 중앙값 ${s.median.toFixed(3)}`;
+    // 비율 큰 순으로 정렬해 핵심부터 읽히게.
+    const lines = [...s.classes]
+      .sort((a, b) => b.percentage - a.percentage)
+      .filter((c) => c.percentage > 0)
+      .map((c) => `· ${c.label} ${c.percentage.toFixed(1)}% (${(c.area_m2 / 1e6).toFixed(2)} km²)`);
+    return [head, body, ...lines].join("\n");
   }
   if (tc.name === "describe_region") {
     return lastRegion?.answer || "지역 관측 브리핑을 생성하지 못했습니다.";

@@ -169,10 +169,12 @@ function classify(index: IndexName, v: number): string {
   return v > 0.1 ? "unburned" : v >= -0.1 ? "moderate_severity" : "high_severity";
 }
 const CLASS_LABEL: Record<string, string> = {
-  no_vegetation: "식생 없음(물·암반·인공구조물)",
-  light_vegetation: "저밀도 식생(관목·초지·경작지)",
-  dense_vegetation: "고밀도 식생(플랜테이션)",
-  very_dense_vegetation: "초고밀도 식생(우림)",
+  // ⚠️ AWS 원본 라벨은 전 지구 기준(플랜테이션/우림)이라 한반도 낙엽수림에 붙으면 오해를 부른다.
+  //    구간(NDVI 임계값)은 그대로 두고 표현만 중립화한다.
+  no_vegetation: "식생 없음(물·나지·시가지)",
+  light_vegetation: "저밀도 식생(초지·경작지·성긴 수목)",
+  dense_vegetation: "고밀도 식생",
+  very_dense_vegetation: "초고밀도 식생(울창한 수관)",
   water: "수체",
   non_water: "비수체",
   unburned: "미연소(건강 식생)",
