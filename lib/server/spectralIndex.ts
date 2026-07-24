@@ -17,6 +17,12 @@ const STAC_URL = "https://earth-search.aws.element84.com/v1/search";
 const EPS = 1e-10;
 /** 분모 하한 — 두 밴드 반사율 합이 이보다 작으면 그림자/무효로 보고 제외(반사율 0.001 = 0.1%). */
 const MIN_DENOM = 1e-3;
+/**
+ * 밝은 쪽 밴드의 최소 반사율. 두 밴드가 **모두 어두우면** 정규화 지수는 의미가 없고
+ * 클램프로 인한 가짜 ±1만 남는다(지형그늘에서 NBR 중앙값 0.998로 연소 신호가 뒤집힌 실측).
+ * 반대로 한쪽만 0이고 다른 쪽이 밝으면(울창한 식생의 적색 흡수, 수체의 NIR 흡수) 지수는 옳다.
+ */
+const MIN_BRIGHT = 0.02;
 /** 출력 격자 한 변 상한 — 메모리/시간 제한(512² = 26만 픽셀). */
 const MAX_PX = 512;
 
@@ -212,13 +218,14 @@ async function readBand(asset: StacAsset, epsg: number, bbox: [number, number, n
       values[i] = NaN;
       continue;
     }
-    // ⚠️ 오프셋(-0.1) 적용 시 어두운 픽셀(지형그늘 등)은 반사율이 음수가 된다.
+    // ⚠️ 오프셋(-0.1) 적용 시 반사율이 음수로 내려가는 픽셀이 있다. 처리 규칙이 까다롭다:
     //    ① 그대로 두면 분모(a+b)가 0을 교차해 지수가 폭발한다(실측 -1197).
-    //    ② 0으로 클램프해도 안 된다 — 한 밴드만 0이 되면 (a-0)/(a+0)=±1 이라는 **가짜 최대값**이
-    //       대량 생성된다(실측: 지형그늘 37.7%인 장면에서 NBR 중앙값 0.998로 연소 신호가 뒤집힘).
-    //    → 음수 반사율은 물리적으로 무효한 관측이므로 **NaN으로 버린다**.
-    const refl = dn * scale + offset;
-    values[i] = refl > 0 ? refl : NaN;
+    //    ② 음수를 전부 NaN으로 버려도 안 된다 — 울창한 수관은 적색광을 거의 다 흡수해 반사율이
+    //       0 근처라 **가장 건강한 식생이 통째로 지워진다**(실측: 센트럴 파크가 전부 투명,
+    //       서울 초고밀도 식생 55.6%→20.6%).
+    //    → 0으로 클램프한다. 한 밴드만 0이어도 다른 밴드가 밝으면 지수 ±1은 **물리적으로 옳다**
+    //      (울창한 식생 NDVI≈1). 어두운 픽셀에서 생기는 가짜 ±1은 아래 MIN_BRIGHT가 걸러낸다.
+    values[i] = Math.max(0, dn * scale + offset);
   }
   // 데시메이션 반영 유효 픽셀 크기(면적 산출용)
   const pixelM = Math.abs(rx) * (pxW / outW);
@@ -293,7 +300,7 @@ export async function computeIndexGrid(
     const va = bandA.values[i], vb = bandB.values[i];
     const denom = va + vb;
     // 무효(nodata·그림자·분모 0)는 NaN — 통계에서 제외되고 PNG에선 투명해진다.
-    if (Number.isNaN(va) || Number.isNaN(vb) || denom <= MIN_DENOM) {
+    if (Number.isNaN(va) || Number.isNaN(vb) || denom <= MIN_DENOM || Math.max(va, vb) < MIN_BRIGHT) {
       values[i] = NaN;
       continue;
     }
