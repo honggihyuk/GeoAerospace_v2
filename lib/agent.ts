@@ -61,7 +61,7 @@ let lastCompare: CompareStats | null = null;
 
 /** scan_region_change(Clay 임베딩 광역 변화) 결과 보관. */
 type RegionScanStats = {
-  place: string; from: string; to: string; joined_cells: number; cell_km: number;
+  place: string; from: string; to: string; joined_cells: number; cell_km: number; source: string;
   cosine_median: number; changed_cells: number; changed_area_km2: number;
   top: { cx: number; cy: number; score: number; sim: number }[];
   cells: { cx: number; cy: number; score: number }[];
@@ -680,7 +680,8 @@ function replyFor(tc: ToolCall, done: string | null): string {
     ];
     // 변화 핫스팟 좌표 상위 몇 개(지도에서 어디를 볼지).
     for (const t of c.top.slice(0, 4)) lines.push(`· 핫스팟 @ ${t.cy.toFixed(3)}, ${t.cx.toFixed(3)} (변화점수 ${t.score.toFixed(2)})`);
-    lines.push("⚠️ Clay 임베딩 상대 변화(적응형 임계값). 절대 면적이 아니라 '이 지역 내 상대적으로 많이 변한 곳'입니다.");
+    const src = c.source === "pgvector" ? "pgvector 적재분" : "온디맨드 다운로드";
+    lines.push(`⚠️ Clay 임베딩 상대 변화(적응형 임계값) · ${src}. 절대 면적이 아니라 '이 지역 내 상대적으로 많이 변한 곳'입니다.`);
     return lines.join("\n");
   }
   if (tc.name === "compare_index") {

@@ -59,7 +59,8 @@ type Cell = { v: Float32Array; cx: number; cy: number };
 const CACHE_MAX = 2;
 const partCache = new Map<string, Map<string, Cell>>();
 
-async function loadPartition(gh: string, ym: string): Promise<Map<string, Cell>> {
+export type ClayCell = { v: Float32Array; cx: number; cy: number };
+export async function loadPartition(gh: string, ym: string): Promise<Map<string, Cell>> {
   const ck = `${gh}:${ym}`;
   const hit = partCache.get(ck);
   if (hit) {
@@ -95,6 +96,42 @@ function cosine(a: Float32Array, b: Float32Array): number {
 
 const pctile = (sorted: number[], p: number) => (sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))] : 0);
 
+/**
+ * DB 우선 경로 — 두 시점이 clay_cells에 적재돼 있으면 pgvector `<=>`로 코사인을 계산한다.
+ * 코사인 = 1 - (a<=>b). AOI는 GIST(geom &&)로 좁힌다. 미적재/DB 미가용이면 null → 다운로드 폴백.
+ */
+async function pairsFromDb(
+  bbox: [number, number, number, number],
+  from: string,
+  to: string
+): Promise<{ cx: number; cy: number; sim: number }[] | null> {
+  try {
+    const { dbReady, db } = await import("./db");
+    if (!(await dbReady())) return null;
+    const client = db();
+    // 두 시점이 모두 적재됐는지 확인(하나라도 없으면 부분 결과가 나오므로 폴백).
+    const cnt = await client.query<{ ym: string; n: string }>(
+      "SELECT ym, count(*) n FROM clay_cells WHERE ym = ANY($1) GROUP BY ym",
+      [[from, to]]
+    );
+    const have = new Map(cnt.rows.map((r) => [r.ym, Number(r.n)]));
+    if (!have.get(from) || !have.get(to)) return null;
+
+    const [w, s, e, n] = bbox;
+    const r = await client.query<{ cx: number; cy: number; sim: number }>(
+      `SELECT ST_X(a.geom) cx, ST_Y(a.geom) cy, 1 - (a.embedding <=> b.embedding) AS sim
+         FROM clay_cells a JOIN clay_cells b USING (cell_id)
+        WHERE a.ym=$1 AND b.ym=$2 AND a.geom && ST_MakeEnvelope($3,$4,$5,$6,4326)`,
+      [from, to, w, s, e, n]
+    );
+    return r.rows
+      .map((x) => ({ cx: Number(x.cx), cy: Number(x.cy), sim: Number(x.sim) }))
+      .filter((x) => x.sim >= ARTIFACT_FLOOR);
+  } catch {
+    return null; // DB 오류 → 다운로드 폴백
+  }
+}
+
 export type RegionChangeCell = { cx: number; cy: number; sim: number; score: number };
 export type RegionChangeResult = {
   bbox: [number, number, number, number];
@@ -102,6 +139,8 @@ export type RegionChangeResult = {
   to: string;
   geohashes: string[];
   joined_cells: number;
+  /** pgvector(적재됨) vs download(온디맨드) */
+  source: "pgvector" | "download";
   cell_km: number;
   cosine_median: number;
   /** 적응형 임계값 — 이 지역 분포에서 "변화"로 본 코사인 상한(p10). */
@@ -127,24 +166,32 @@ export async function scanRegionChange(
   const [w, s, e, n] = bbox;
   const inBox = (c: Cell) => c.cx >= w && c.cx <= e && c.cy >= s && c.cy <= n;
 
-  // 파티션(전체 셀)을 캐시에서/다운로드로 얻고, 조인은 bbox 안 셀만.
-  const pairs: { cx: number; cy: number; sim: number }[] = [];
-  let hadFrom = false, hadTo = false;
-  for (const gh of ghs) {
-    const A = await loadPartition(gh, from);
-    const B = await loadPartition(gh, to);
-    if (A.size) hadFrom = true;
-    if (B.size) hadTo = true;
-    for (const [id, a] of A) {
-      if (!inBox(a)) continue;
-      const b = B.get(id);
-      if (!b) continue;
-      const sim = cosine(a.v, b.v);
-      if (sim < ARTIFACT_FLOOR) continue; // 구름/눈 아티팩트
-      pairs.push({ cx: a.cx, cy: a.cy, sim });
+  // ① DB 우선 — 두 시점이 clay_cells에 적재돼 있으면 pgvector `<=>` 코사인을 쓴다(240MB 다운로드 회피).
+  let pairs: { cx: number; cy: number; sim: number }[] = [];
+  let source: "pgvector" | "download" = "pgvector";
+  const dbPairs = await pairsFromDb(bbox, from, to);
+  if (dbPairs) {
+    pairs = dbPairs;
+  } else {
+    // ② 폴백 — 미적재 시 파티션을 다운로드해 인메모리 코사인.
+    source = "download";
+    let hadFrom = false, hadTo = false;
+    for (const gh of ghs) {
+      const A = await loadPartition(gh, from);
+      const B = await loadPartition(gh, to);
+      if (A.size) hadFrom = true;
+      if (B.size) hadTo = true;
+      for (const [id, a] of A) {
+        if (!inBox(a)) continue;
+        const b = B.get(id);
+        if (!b) continue;
+        const sim = cosine(a.v, b.v);
+        if (sim < ARTIFACT_FLOOR) continue; // 구름/눈 아티팩트
+        pairs.push({ cx: a.cx, cy: a.cy, sim });
+      }
     }
+    if (!hadFrom || !hadTo) throw new Error(`임베딩 파티션 없음(${from} 또는 ${to}) — 2017-01~2026-04 월 단위만 존재`);
   }
-  if (!hadFrom || !hadTo) throw new Error(`임베딩 파티션 없음(${from} 또는 ${to}) — 2017-01~2026-04 월 단위만 존재`);
   if (!pairs.length) throw new Error("두 시점에 공통으로 존재하는 셀이 없습니다");
 
   const simsSorted = pairs.map((p) => p.sim).sort((x, y) => x - y);
@@ -169,6 +216,7 @@ export async function scanRegionChange(
     from,
     to,
     geohashes: ghs,
+    source,
     joined_cells: pairs.length,
     cell_km: CELL_KM,
     cosine_median: Math.round(median * 1e3) / 1e3,
