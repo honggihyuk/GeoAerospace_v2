@@ -9,7 +9,8 @@ import { safeFetch } from "./safeFetch";
 
 const BASE = "https://openapi.its.go.kr:9443/cctvInfo";
 
-export type CctvItem = { id: string; name: string; lon: number; lat: number; url: string | null; format: string | null };
+/** source: its=HLS 직접재생(+VLM 판독), utic=UTIC JSP 플레이어 iframe(지자체별 스킴 위임) */
+export type CctvItem = { id: string; name: string; lon: number; lat: number; url: string | null; format: string | null; source: "its" | "utic" };
 type ItsRow = { coordx?: string | number; coordy?: string | number; cctvname?: string; cctvurl?: string; cctvformat?: string };
 
 export function isCctvConfigured(): boolean {
@@ -60,6 +61,7 @@ async function fetchType(key: string, type: "ex" | "its", bbox: [number, number,
       lat,
       url: row.cctvurl ?? null,
       format: row.cctvformat ?? null,
+      source: "its",
     });
   }
   return out;

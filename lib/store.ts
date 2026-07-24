@@ -19,7 +19,8 @@ type Layers = {
   signal: boolean;
 };
 
-export type CctvPoint = { id: string; name: string; lon: number; lat: number; url: string | null; format: string | null };
+/** source: its=HLS 직접재생(+VLM 판독), utic=UTIC JSP 플레이어 iframe(도심·지자체) */
+export type CctvPoint = { id: string; name: string; lon: number; lat: number; url: string | null; format: string | null; source?: "its" | "utic" };
 type CctvState = { points: CctvPoint[]; source: string; sample: boolean; status: "idle" | "loading" | "ready" | "error" };
 
 export type IncidentKind = "accident" | "construction" | "event" | "control" | "weather" | "other";

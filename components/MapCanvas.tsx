@@ -409,9 +409,17 @@ export default function MapCanvas() {
     const onPointClick = (e: maplibregl.MapLayerMouseEvent) => {
       const f = e.features?.[0];
       if (!f) return;
-      const p = f.properties as { name: string; lon: string; lat: string; url: string; format: string };
+      const p = f.properties as { name: string; lon: string; lat: string; url: string; format: string; source: string };
       setCctvPos(null); // 새로 클릭하면 기본 위치로
-      setPickedCctv({ id: "", name: p.name, lon: Number(p.lon), lat: Number(p.lat), url: p.url || null, format: p.format || null });
+      setPickedCctv({
+        id: "",
+        name: p.name,
+        lon: Number(p.lon),
+        lat: Number(p.lat),
+        url: p.url || null,
+        format: p.format || null,
+        source: p.source === "utic" ? "utic" : "its",
+      });
     };
     const onClusterClick = async (e: maplibregl.MapLayerMouseEvent) => {
       const f = e.features?.[0];
@@ -445,7 +453,7 @@ export default function MapCanvas() {
           features: pts.map((p) => ({
             type: "Feature" as const,
             geometry: { type: "Point" as const, coordinates: [p.lon, p.lat] },
-            properties: { name: p.name, lon: p.lon, lat: p.lat, url: p.url ?? "", format: p.format ?? "" },
+            properties: { name: p.name, lon: p.lon, lat: p.lat, url: p.url ?? "", format: p.format ?? "", source: p.source ?? "its" },
           })),
         },
       });
@@ -480,7 +488,8 @@ export default function MapCanvas() {
         filter: ["!", ["has", "point_count"]],
         paint: {
           "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 4, 13, 9],
-          "circle-color": "#5CE1FF",
+          // ITS=시안(HLS+VLM 판독), UTIC=연보라(도심·지자체, JSP iframe)
+          "circle-color": ["case", ["==", ["get", "source"], "utic"], "#a78bfa", "#5CE1FF"],
           "circle-stroke-color": "#04121a",
           "circle-stroke-width": 1.5,
           "circle-opacity": 0.95,
@@ -901,10 +910,25 @@ export default function MapCanvas() {
             </span>
           </div>
           <div style={{ fontSize: 11.5, color: "var(--txt)", margin: "6px 0 7px" }}>{pickedCctv.name}</div>
-          {pickedCctv.url ? (
-            <CctvPlayer key={pickedCctv.url} url={pickedCctv.url} name={pickedCctv.name} lon={pickedCctv.lon} lat={pickedCctv.lat} />
-          ) : (
+          {!pickedCctv.url ? (
             <div style={{ fontSize: 10.5, color: "var(--faint)", padding: "16px 0", textAlign: "center" }}>영상 스트림 없음</div>
+          ) : pickedCctv.source === "utic" ? (
+            // UTIC은 지자체별 스트림 스킴이 제각각 → UTIC 플레이어를 그대로 임베드(분기 위임).
+            // cross-origin이라 프레임 캡처 불가 → VLM 판독은 ITS CCTV가 담당.
+            <>
+              <iframe
+                key={pickedCctv.url}
+                src={pickedCctv.url}
+                title={pickedCctv.name}
+                style={{ width: "100%", height: 200, border: 0, borderRadius: 6, background: "#000" }}
+                allow="autoplay; fullscreen"
+              />
+              <div style={{ fontSize: 9.5, color: "var(--faint)", marginTop: 5 }}>
+                경찰청 도시교통정보센터(UTIC) 제공 · 도심/지자체 · VLM 판독 미지원
+              </div>
+            </>
+          ) : (
+            <CctvPlayer key={pickedCctv.url} url={pickedCctv.url} name={pickedCctv.name} lon={pickedCctv.lon} lat={pickedCctv.lat} />
           )}
           <div className="mono" style={{ fontSize: 10, color: "var(--muted)", marginTop: 7, lineHeight: 1.6, display: "flex", justifyContent: "space-between" }}>
             <span>
