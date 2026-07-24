@@ -11,6 +11,7 @@
 import { fromUrl } from "geotiff";
 import proj4 from "proj4";
 import { safeFetch, isAllowedHost } from "./safeFetch";
+import { bboxCoverage } from "./geoUtil";
 
 const STAC_URL = "https://earth-search.aws.element84.com/v1/search";
 const EPS = 1e-10;
@@ -80,14 +81,6 @@ async function searchScenes(bbox: [number, number, number, number], dateStr: str
   return [];
 }
 
-/** 사각형 교차 면적 비율 — 래스터 I/O 없는 순수 기하(결정론적 장면 선택). */
-function coverage(aoi: [number, number, number, number], item: number[]): number {
-  const w = Math.max(0, Math.min(aoi[2], item[2]) - Math.max(aoi[0], item[0]));
-  const h = Math.max(0, Math.min(aoi[3], item[3]) - Math.max(aoi[1], item[1]));
-  const a = (aoi[2] - aoi[0]) * (aoi[3] - aoi[1]);
-  return a > 0 ? (w * h) / a : 0;
-}
-
 /** 커버리지 최대 → 구름 최소 순. 같은 AOI면 항상 같은 장면을 고른다. */
 function pickScene(features: Feature[], bbox: [number, number, number, number], need: string[]): Scene | null {
   const cands = features
@@ -97,7 +90,7 @@ function pickScene(features: Feature[], bbox: [number, number, number, number], 
       date: String(f.properties.datetime ?? "").slice(0, 10),
       cloud: typeof f.properties["eo:cloud_cover"] === "number" ? (f.properties["eo:cloud_cover"] as number) : null,
       epsg: Number(f.properties["proj:epsg"] ?? 0),
-      coverage: coverage(bbox, f.bbox),
+      coverage: bboxCoverage(bbox, f.bbox),
       assets: f.assets,
     }))
     .filter((s) => s.epsg > 0 && s.coverage > 0);
