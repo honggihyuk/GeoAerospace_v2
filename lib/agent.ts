@@ -3,7 +3,7 @@
 import { useStore } from "./store";
 import { mapBus } from "./mapBus";
 import { computeOrbit, currentPosition } from "./orbit";
-import { geocodePlace, findCity } from "./geo";
+import { geocodePlace, geocodeArea, findCity } from "./geo";
 import { loadFires } from "./firesClient";
 import { findGibsLayer } from "./gibs";
 import { KOREA_BBOX } from "./koreaCube";
@@ -380,11 +380,11 @@ async function execTool(tc: ToolCall): Promise<string | null> {
     const index = String(args.index ?? "ndvi");
     const place = String(args.place ?? "").trim();
     if (!place) return null;
-    const g = await geocodePlace(place);
-    if (!g) return null;
-    // bbox는 시스템이 생성 — 0.1°×0.1°(≈11km) 로 /api/spectral 의 1° 상한 안에 든다.
-    const pad = 0.05;
-    const bbox = [g[0] - pad, g[1] - pad, g[0] + pad, g[1] + pad].map((n) => n.toFixed(4)).join(",");
+    // bbox는 시스템이 생성(§4.3 환각 방지). 지오코더의 **실제 경계**를 쓰되 API 상한 1°로 클램프.
+    const area = await geocodeArea(place, 1.0);
+    if (!area) return null;
+    const g = area.center;
+    const bbox = area.bbox.map((n) => n.toFixed(4)).join(",");
     try {
       const r = await fetch(`/api/spectral?index=${encodeURIComponent(index)}&bbox=${bbox}`);
       const j = (await r.json()) as { ok?: boolean; reason?: string } & Omit<SpectralStats, "place">;
@@ -397,7 +397,7 @@ async function execTool(tc: ToolCall): Promise<string | null> {
       useStore.getState().setSpectral({
         index: index as "ndvi" | "ndwi" | "nbr",
         place,
-        bbox: [g[0] - pad, g[1] - pad, g[0] + pad, g[1] + pad],
+        bbox: area.bbox,
         url: `/api/spectral/image?index=${encodeURIComponent(index)}&bbox=${bbox}`,
         date: lastSpectral.scene?.date ?? "",
         opacity: 0.75,
@@ -415,11 +415,11 @@ async function execTool(tc: ToolCall): Promise<string | null> {
     const from = String(args.from ?? "");
     const to = String(args.to ?? "");
     if (!place || !from || !to) return null;
-    const g = await geocodePlace(place);
-    if (!g) return null;
-    // 변화 탐지는 지수 6회 읽기라 비용이 커 AOI를 분광지수보다 좁게 잡는다(/api/change 상한 0.5°).
-    const pad = 0.06;
-    const bbox = [g[0] - pad, g[1] - pad, g[0] + pad, g[1] + pad].map((n) => n.toFixed(4)).join(",");
+    // 변화 탐지는 지수 6회 읽기라 비용이 커 상한이 더 좁다(/api/change 0.5°).
+    const area = await geocodeArea(place, 0.5);
+    if (!area) return null;
+    const g = area.center;
+    const bbox = area.bbox.map((n) => n.toFixed(4)).join(",");
     try {
       const r = await fetch(`/api/change?bbox=${bbox}&from=${from}&to=${to}`);
       const j = (await r.json()) as { ok?: boolean } & Omit<ChangeStats, "place">;
@@ -433,7 +433,7 @@ async function execTool(tc: ToolCall): Promise<string | null> {
       useStore.getState().setSpectral({
         index: layer === "dnbr" ? "dnbr" : "change",
         place,
-        bbox: [g[0] - pad, g[1] - pad, g[0] + pad, g[1] + pad],
+        bbox: area.bbox,
         url: `/api/change/image?bbox=${bbox}&from=${from}&to=${to}&layer=${layer}`,
         date: `${from} → ${to}`,
         opacity: 0.8,

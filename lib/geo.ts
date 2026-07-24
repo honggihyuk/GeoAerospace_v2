@@ -33,6 +33,44 @@ export function findCity(text: string): string | null {
   return null;
 }
 
+/**
+ * 지명 → 분석용 AOI. 지오코더가 준 **실제 경계**를 쓰되 상·하한으로 클램프한다.
+ *   - 고정 패드는 큰 도시엔 너무 좁고 작은 마을엔 너무 넓다 → 실제 bbox가 훨씬 낫다.
+ *   - maxDeg: API 상한(분광 1°, 변화 0.5°)을 넘지 않게 중심 기준 축소.
+ *   - minDeg: 점(point) 결과가 픽셀 부족으로 실패하지 않게 최소 크기 보장.
+ * 내장 테이블 도시는 좌표만 있으므로 기본 패드를 쓴다.
+ */
+export async function geocodeArea(
+  place: string,
+  maxDeg: number,
+  minDeg = 0.02
+): Promise<{ center: [number, number]; bbox: [number, number, number, number]; source: "table" | "osm" | "fallback" } | null> {
+  const clamp = (c: [number, number], b: [number, number, number, number] | null, src: "table" | "osm" | "fallback") => {
+    const [lng, lat] = c;
+    let w = b ? b[2] - b[0] : minDeg * 2;
+    let h = b ? b[3] - b[1] : minDeg * 2;
+    w = Math.min(maxDeg, Math.max(minDeg, w));
+    h = Math.min(maxDeg, Math.max(minDeg, h));
+    // 중심은 지오코더 좌표를 신뢰(경계 중심이 아니라) — 관심 지점이 중앙에 오도록.
+    return { center: c, bbox: [lng - w / 2, lat - h / 2, lng + w / 2, lat + h / 2] as [number, number, number, number], source: src };
+  };
+
+  const key = place.trim().toLowerCase().replace(/(광역시|특별시|시|로|으로|에|를|을)$/u, "").trim();
+  const t = CITIES[key] ?? CITIES[place.trim().toLowerCase()];
+  if (t) return clamp(t, null, "table");
+
+  try {
+    const r = await fetch(`/api/geocode?q=${encodeURIComponent(place)}`, { cache: "no-store" });
+    if (!r.ok) return null;
+    const j = (await r.json()) as { lat?: number; lng?: number; bbox?: number[]; fallback?: boolean };
+    if (typeof j.lng !== "number" || typeof j.lat !== "number") return null;
+    const bb = j.bbox && j.bbox.length === 4 ? (j.bbox as [number, number, number, number]) : null;
+    return clamp([j.lng, j.lat], bb, j.fallback ? "fallback" : "osm");
+  } catch {
+    return null;
+  }
+}
+
 /** 지명 → [lng, lat]. 내장 테이블 우선, 없으면 /api/geocode(Nominatim). */
 export async function geocodePlace(place: string): Promise<[number, number] | null> {
   const key = place.trim().toLowerCase().replace(/(광역시|특별시|시|로|으로|에|를|을)$/u, "").trim();
