@@ -46,6 +46,8 @@ export type IndexStats = {
   grid: { width: number; height: number; pixel_m: number };
   valid_pixels: number;
   area_km2: number;
+  /** SCL 기준 수체 면적(㎡). NDWI 임계값보다 신뢰도가 높다. null = SCL 없음. */
+  scl_water_area_m2: number | null;
   min: number;
   max: number;
   mean: number;
@@ -264,6 +266,12 @@ export type IndexGrid = {
   height: number;
   pixelM: number;
   scene: Scene;
+  /**
+   * SCL(장면분류)이 물(class 6)로 판정한 픽셀 수. **수체 면적은 이걸 쓰는 게 정석**이다 —
+   * NDWI 고정 임계값은 L2A가 어두운 수면에서 반사율을 음수로 과보정하는 탓에 신뢰할 수 없다
+   * (실측: 폴섬호에서 NDWI 중앙값 -1로 물이 전혀 안 잡힘). SCL이 없으면 null.
+   */
+  sclWaterPixels: number | null;
 };
 
 /** bbox 영역의 지수 격자 계산(통계·이미지 공통 경로). date 미지정 시 오늘 기준 과거 60일. */
@@ -307,14 +315,20 @@ export async function computeIndexGrid(
     const v = (va - vb) / (denom + EPS);
     values[i] = Number.isFinite(v) ? Math.max(-1, Math.min(1, v)) : NaN;
   }
-  return { values, width: tg.w, height: tg.h, pixelM: tg.pixelM, scene };
+  let sclWaterPixels: number | null = null;
+  if (scl) {
+    let n6 = 0;
+    for (let i = 0; i < scl.length; i++) if (scl[i] === 6) n6++;
+    sclWaterPixels = n6;
+  }
+  return { values, width: tg.w, height: tg.h, pixelM: tg.pixelM, scene, sclWaterPixels };
 }
 
 /** bbox[w,s,e,n] 영역의 분광지수 통계. */
 export async function computeIndex(
   index: IndexName,
   bbox: [number, number, number, number],
-  opts: { date?: string; maxCloud?: number } = {}
+  opts: { date?: string; maxCloud?: number; days?: number; preferNearestDate?: boolean } = {}
 ): Promise<IndexStats> {
   const { formula } = INDEX_BANDS[index];
   const g = await computeIndexGrid(index, bbox, opts);
@@ -344,6 +358,7 @@ export async function computeIndex(
     grid: { width: bandA.width, height: bandA.height, pixel_m: Math.round(bandA.pixelM * 10) / 10 },
     valid_pixels: total,
     area_km2: Math.round((total * pixelArea) / 1000) / 1000,
+    scl_water_area_m2: g.sclWaterPixels === null ? null : Math.round(g.sclWaterPixels * pixelArea),
     min: Math.round(sorted[0] * 1e4) / 1e4,
     max: Math.round(sorted[total - 1] * 1e4) / 1e4,
     mean: Math.round((sum / total) * 1e4) / 1e4,
@@ -358,5 +373,79 @@ export async function computeIndex(
         percentage: Math.round((px / total) * 1000) / 10,
       };
     }),
+  };
+}
+
+/** 지수 2시점 비교 결과 — 클래스별 면적 증감을 낸다(예: NDWI 수체 면적의 가뭄 전후 변화). */
+export type IndexCompare = {
+  index: IndexName;
+  from: IndexStats;
+  to: IndexStats;
+  /** 클래스별 면적 증감(㎡). to - from. */
+  delta: { name: string; label: string; from_m2: number; to_m2: number; diff_m2: number; diff_pct: number | null }[];
+  /** 두 시점 유효 면적이 다르면 면적 비교가 왜곡된다 → 비율을 함께 준다. */
+  valid_area_ratio: number;
+  warning: string | null;
+};
+
+/**
+ * 같은 AOI를 두 시점으로 비교한다. 각 시점은 **목표일에 가장 가까운** 장면을 고르고
+ * 검색창을 좁혀(기본 30일) 두 시점이 섞이지 않게 한다.
+ * ⚠️ 구름·그늘 마스킹량이 시점마다 달라 유효 면적이 다르면 면적 증감이 실제 변화가 아니라
+ *    **관측 가능 면적의 차이**일 수 있다 → valid_area_ratio와 경고로 드러낸다.
+ */
+export async function compareIndex(
+  index: IndexName,
+  bbox: [number, number, number, number],
+  fromDate: string,
+  toDate: string,
+  opts: { maxCloud?: number; windowDays?: number } = {}
+): Promise<IndexCompare> {
+  const o = { maxCloud: opts.maxCloud ?? 30, days: opts.windowDays ?? 30, preferNearestDate: true };
+  const [a, b] = await Promise.all([
+    computeIndex(index, bbox, { ...o, date: fromDate }),
+    computeIndex(index, bbox, { ...o, date: toDate }),
+  ]);
+
+  const byName = (s: IndexStats, n: string) => s.classes.find((c) => c.name === n);
+  const delta = CLASS_ORDER[index].map((name) => {
+    const fa = byName(a, name)?.area_m2 ?? 0;
+    const ta = byName(b, name)?.area_m2 ?? 0;
+    return {
+      name,
+      label: CLASS_LABEL[name],
+      from_m2: fa,
+      to_m2: ta,
+      diff_m2: ta - fa,
+      diff_pct: fa > 0 ? Math.round(((ta - fa) / fa) * 1000) / 10 : null,
+    };
+  });
+
+  // SCL 수체 면적 증감 — NDWI 임계값보다 신뢰할 수 있는 물 지표.
+  if (a.scl_water_area_m2 !== null && b.scl_water_area_m2 !== null) {
+    const fa = a.scl_water_area_m2;
+    const ta = b.scl_water_area_m2;
+    delta.unshift({
+      name: "scl_water",
+      label: "수체(SCL 기준·권장)",
+      from_m2: fa,
+      to_m2: ta,
+      diff_m2: ta - fa,
+      diff_pct: fa > 0 ? Math.round(((ta - fa) / fa) * 1000) / 10 : null,
+    });
+  }
+
+  const ratio = a.area_km2 > 0 ? b.area_km2 / a.area_km2 : 0;
+  return {
+    index,
+    from: a,
+    to: b,
+    delta,
+    valid_area_ratio: Math.round(ratio * 1000) / 1000,
+    warning:
+      ratio < 0.8 || ratio > 1.25
+        ? `두 시점의 유효 관측 면적이 ${a.area_km2.toFixed(2)}→${b.area_km2.toFixed(2)} km²로 크게 다릅니다(비율 ${ratio.toFixed(2)}). ` +
+          `면적 증감이 실제 변화가 아니라 구름·그늘 마스킹 차이일 수 있으니 주의하세요.`
+        : null,
   };
 }
