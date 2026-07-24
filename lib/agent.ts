@@ -126,7 +126,7 @@ function resolveIntent(msg: string): ToolCall[] | null {
 
   // 2-000) 광역 토지변화 스캔(Clay 임베딩) — 연도 2개(YYYY) + 광역/스캔 의도. 픽셀 탐지보다 먼저.
   {
-    const years = msg.match(/(20\d{2})/g) ?? [];
+    const years = msg.match(/(20\d{2})/g) ?? [];
     if (REGIONSCAN_RE.test(msg) && years.length >= 2) {
       const cityHit = findCity(msg);
       const near = msg.match(/([가-힣A-Za-z][가-힣A-Za-z ]{1,24}?)\s*(?:의|지역|일대|토지|변화|개발|도시화)/);
@@ -777,3 +777,4 @@ export async function runAgent(text: string) {
     useStore.getState().setBusy(false);
   }
 }
+
