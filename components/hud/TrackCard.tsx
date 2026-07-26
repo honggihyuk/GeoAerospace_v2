@@ -8,6 +8,9 @@ import { centralAngleDeg, findNextPass, type Pass } from "@/lib/passes";
 
 const SEOUL = { lat: 37.5665, lon: 126.978, altKm: 0.038 };
 
+// 위성별 기동 조회 결과 캐시(모듈 스코프, 세션 지속) — /api/maneuvers=gp_history 재호출 방지(정책).
+const maneuverCache = new Map<number, ManeuverInfo | null>();
+
 export default function TrackCard() {
   const selectedNorad = useStore((s) => s.selectedNorad);
   const sats = useStore((s) => s.sats);
@@ -53,14 +56,24 @@ export default function TrackCard() {
   }, [orbit, stations]);
 
   // 기동 감지 (고도화 A3) — 기동이 있었다면 그 이전 예측은 무효다.
+  // ⚠️ /api/maneuvers 는 Space-Track gp_history 를 태운다(정책 민감). 위성 선택마다 재호출하면
+  //   gp_history 를 반복 조회해 계정 정지 위험(실제 발생) → 세션 내 위성별로 1회만 조회하고 캐시한다.
   const [man, setMan] = useState<ManeuverInfo | null>(null);
   useEffect(() => {
     if (!selectedNorad) return;
+    if (maneuverCache.has(selectedNorad)) {
+      setMan(maneuverCache.get(selectedNorad)!);
+      return; // 이미 조회함 → 재호출 금지(gp_history 폴링 방지)
+    }
     let alive = true;
     setMan(null);
     fetch(`/api/maneuvers?norad=${selectedNorad}`)
       .then((r) => r.json())
-      .then((j) => alive && setMan(j?.available ? j : null))
+      .then((j) => {
+        const v = j?.available ? (j as ManeuverInfo) : null;
+        if (j?.available) maneuverCache.set(selectedNorad, v); // 성공만 캐시(레이트리밋 응답은 나중에 재시도 허용)
+        if (alive) setMan(v);
+      })
       .catch(() => {});
     return () => {
       alive = false;
