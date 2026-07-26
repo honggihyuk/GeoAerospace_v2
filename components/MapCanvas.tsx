@@ -228,16 +228,31 @@ export default function MapCanvas() {
       return out;
     };
 
-    // 셀(x,y) → 이미지 픽셀 RGBA 오프셋. 이미지 y는 위가 북.
+    // 정점(x,y) → 이미지 픽셀 RGBA 오프셋. 정점은 edge-to-edge(격자 교점), 이미지 y는 위가 북.
     const sampleIdx = (x: number, y: number, iw: number, ih: number) => {
-      const px = Math.min(iw - 1, Math.floor(((x + 0.5) / GRID_NX) * iw));
-      const py = Math.min(ih - 1, Math.floor((1 - (y + 0.5) / GRID_NY) * ih));
+      const px = Math.min(iw - 1, Math.round((x / (GRID_NX - 1)) * (iw - 1)));
+      const py = Math.min(ih - 1, Math.round((1 - y / (GRID_NY - 1)) * (ih - 1)));
       return (py * iw + px) * 4;
     };
 
-    // 높이 관측: Terrarium 30m DEM(queryTerrainElevation) 셀별 샘플.
-    // (Copernicus DEM GLO-30/90 은 남한이 정부 제한으로 CDSE 미제공 nodata — 확인됨. Terrarium 사용.)
-    const observeKorea = () => {
+    // 높이 관측: 서버 /api/dem 이 Terrarium z=9(≈305m/px) 를 직접 디코딩해 **화면 줌과 무관한**
+    // 실측 고도 격자를 Int16 로 준다. 실패 시에만 클라 queryTerrainElevation(화면 줌 의존, 저정밀) 폴백.
+    const observeKorea = async () => {
+      const { west, south, east, north } = KOREA_BBOX;
+      try {
+        const res = await fetch(`/api/dem?bbox=${west},${south},${east},${north}&nx=${GRID_NX}&ny=${GRID_NY}`);
+        if (res.ok) {
+          const i16 = new Int16Array(await res.arrayBuffer());
+          if (i16.length === N) {
+            const heights = new Float32Array(N);
+            for (let i = 0; i < N; i++) heights[i] = i16[i]; // m (실측; 바다=음수, 타일실패=-9999 → 메시서 제외)
+            heightsCache = heights;
+            return;
+          }
+        }
+      } catch {
+        /* 네트워크 실패 → 아래 폴백 */
+      }
       const heights = new Float32Array(N);
       for (let y = 0; y < GRID_NY; y++)
         for (let x = 0; x < GRID_NX; x++) {
@@ -266,8 +281,8 @@ export default function MapCanvas() {
       const { west, south, east, north } = KOREA_BBOX;
       const url =
         surface === "ortho"
-          ? `/api/vworld?bbox=${west},${south},${east},${north}&w=512`
-          : `/api/sar?bbox=${west},${south},${east},${north}&w=512`;
+          ? `/api/vworld?bbox=${west},${south},${east},${north}&w=1024`
+          : `/api/sar?bbox=${west},${south},${east},${north}&w=1024`;
       try {
         const res = await fetch(url);
         if (!res.ok) return; // 미설정/실패 → 고도색 유지
@@ -306,10 +321,9 @@ export default function MapCanvas() {
       const next = !st.cube.active;
       st.setCubeActive(next);
       if (next) {
-        map.flyTo({ center: KOREA_CENTER as [number, number], zoom: 4.6, pitch: 45, speed: 1.1, essential: true });
+        map.flyTo({ center: KOREA_CENTER as [number, number], zoom: 5.0, pitch: 55, speed: 1.1, essential: true });
         map.once("idle", () => {
-          observeKorea();
-          void applySurface();
+          void observeKorea().then(applySurface); // 실측 DEM 수신 후 표면 적용
         });
       } else {
         heightsCache = null;

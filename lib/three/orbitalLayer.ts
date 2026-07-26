@@ -12,7 +12,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import type { CustomLayerInterface, Map as MLMap } from "maplibre-gl";
-import { KOREA_CENTER, CUBE_EXAG, CUBE_GAP, CUBE_MIN_M, SEA_LEVEL_M, type KoreaGrid } from "@/lib/koreaCube";
+import { KOREA_CENTER, MESH_EXAG, SEA_LEVEL_M, type KoreaGrid } from "@/lib/koreaCube";
 
 export type SatView = {
   norad: number;
@@ -77,29 +77,44 @@ export function createOrbitalLayer(
   let cubeSat: THREE.Group;
   let cubeSpin = 0;
 
-  // 한반도 큐브 그리드 (큐브샛 관측) — Korea 중심 앵커 접평면에 InstancedMesh 복셀.
+  // 한반도 지형 메시 (큐브샛 관측) — Korea 중심 앵커 로컬 프레임에 정점 변위 heightmap.
+  // 구버전은 4.6km 큐브(InstancedMesh 박스)였으나, 실측 고도를 계단 없이 드러내려고
+  // 320×360 정점의 연속 삼각형 메시로 교체했다. 정점색 = 표면 소스(정사/SAR/고도).
   let gridScene: THREE.Scene;
-  let gridMesh: THREE.InstancedMesh | null = null;
+  let terrainMesh: THREE.Mesh | null = null;
+  let terrainGeom: THREE.BufferGeometry | null = null;
   let lastGrid: KoreaGrid | null = null;
+  // 정점별 로컬 메트릭 캐시(동·북 미터 + 과장 후 상방 미터) — 전체 재빌드 시 채우고,
+  // 카메라 이동(zoom morph) 때는 이 값 × 재유도 기저로 위치만 다시 쓴다(법선·색·인덱스는 유지).
+  let baseE: Float32Array | null = null;
+  let baseN: Float32Array | null = null;
+  let baseUp: Float32Array | null = null;
 
-  function rebuildGrid(transform: ModelTransform, grid: KoreaGrid | null) {
-    if (gridMesh) {
-      gridScene.remove(gridMesh);
-      gridMesh.geometry.dispose();
-      (gridMesh.material as THREE.Material).dispose();
-      gridMesh = null;
+  function disposeTerrain() {
+    if (terrainMesh) {
+      gridScene.remove(terrainMesh);
+      terrainMesh.geometry.dispose();
+      (terrainMesh.material as THREE.Material).dispose();
+      terrainMesh = null;
+      terrainGeom = null;
     }
-    if (!grid || typeof transform.getMatrixForModel !== "function") return;
+  }
+
+  function rebuildTerrain(transform: ModelTransform, grid: KoreaGrid | null) {
+    if (!grid || typeof transform.getMatrixForModel !== "function") {
+      disposeTerrain();
+      lastGrid = null;
+      return;
+    }
     const { nx, ny, heights, colors, bbox } = grid;
+    const V = nx * ny;
     const cLng = (bbox.west + bbox.east) / 2;
     const cLat = (bbox.south + bbox.north) / 2;
     const mLat = 110_540;
     const mLng = 111_320 * Math.cos((cLat * Math.PI) / 180);
-    const cellWm = ((bbox.east - bbox.west) / nx) * mLng;
-    const cellHm = ((bbox.north - bbox.south) / ny) * mLat;
 
-    // 앵커(한국 중심) 로컬 프레임에서 동/북/상 기저를 경험적으로 유도한다 — 프레임 축 규약을
-    // 가정하지 않는다. 렌더 패스가 mainMatrix ⊗ getMatrixForModel(KOREA_CENTER,0) 로 이 프레임을 쓴다.
+    // 앵커(한국 중심) 로컬 프레임의 동/북/상 기저 — getMatrixForModel 유한차분으로 유도(프레임 축
+    // 규약 불가정). 렌더 패스가 mainMatrix ⊗ getMatrixForModel(KOREA_CENTER,0) 로 이 프레임을 쓴다.
     const anchorInv = new THREE.Matrix4().fromArray(transform.getMatrixForModel!(KOREA_CENTER, 0)).invert();
     const localOf = (lng: number, lat: number, alt: number) => {
       const t = transform.getMatrixForModel!([lng, lat], alt);
@@ -111,48 +126,76 @@ export function createOrbitalLayer(
     const nHat = localOf(cLng, cLat + dDeg, 0).sub(o).multiplyScalar(1 / (dDeg * mLat)); // /미터(북)
     const uHat = localOf(cLng, cLat, 10_000).sub(o).multiplyScalar(1 / 10_000); // /미터(상)
 
-    // 바다 셀(해발 SEA_LEVEL_M 이하) 제외 → 육지·섬만 큐브화. 인스턴스 수 = 육지 셀 수.
-    let land = 0;
-    for (let idx = 0; idx < nx * ny; idx++) if (heights[idx] >= SEA_LEVEL_M) land++;
-    if (land === 0) return;
+    const fullRebuild = grid !== lastGrid || !terrainGeom || !baseE || baseE.length !== V;
 
-    const mesh = new THREE.InstancedMesh(
-      new THREE.BoxGeometry(1, 1, 1),
-      new THREE.MeshStandardMaterial({ metalness: 0.1, roughness: 0.85 }),
-      land
-    );
-    mesh.frustumCulled = false;
-    const m = new THREE.Matrix4();
-    const col = new THREE.Color();
-    const xA = new THREE.Vector3();
-    const yA = new THREE.Vector3();
-    const zA = new THREE.Vector3();
-    const pos = new THREE.Vector3();
-    let k = 0; // 육지 인스턴스 인덱스
-    for (let y = 0; y < ny; y++) {
-      for (let x = 0; x < nx; x++) {
-        const i = y * nx + x;
-        if (heights[i] < SEA_LEVEL_M) continue; // 바다 숨김
-        const lng = bbox.west + ((x + 0.5) / nx) * (bbox.east - bbox.west);
-        const lat = bbox.south + ((y + 0.5) / ny) * (bbox.north - bbox.south);
-        const eastM = (lng - cLng) * mLng;
+    if (fullRebuild) {
+      // 정점 로컬 오프셋 + 과장 상방 미터 캐시. 음수 고도(바다)는 상방 0(해면).
+      baseE = new Float32Array(V);
+      baseN = new Float32Array(V);
+      baseUp = new Float32Array(V);
+      for (let y = 0; y < ny; y++) {
+        const lat = bbox.south + (y / (ny - 1)) * (bbox.north - bbox.south);
         const northM = (lat - cLat) * mLat;
-        const hzM = Math.max(CUBE_MIN_M, heights[i] * CUBE_EXAG);
-        xA.copy(eHat).multiplyScalar(cellWm * CUBE_GAP);
-        yA.copy(nHat).multiplyScalar(cellHm * CUBE_GAP);
-        zA.copy(uHat).multiplyScalar(hzM);
-        pos.copy(o).addScaledVector(eHat, eastM).addScaledVector(nHat, northM).addScaledVector(uHat, hzM / 2);
-        m.makeBasis(xA, yA, zA).setPosition(pos);
-        mesh.setMatrixAt(k, m);
-        col.setRGB(colors[i * 3] / 255, colors[i * 3 + 1] / 255, colors[i * 3 + 2] / 255);
-        mesh.setColorAt(k, col);
-        k++;
+        for (let x = 0; x < nx; x++) {
+          const i = y * nx + x;
+          const lng = bbox.west + (x / (nx - 1)) * (bbox.east - bbox.west);
+          baseE[i] = (lng - cLng) * mLng;
+          baseN[i] = northM;
+          baseUp[i] = Math.max(0, heights[i]) * MESH_EXAG;
+        }
       }
+      // 인덱스: 네 꼭짓점이 모두 육지(≥SEA_LEVEL_M)인 쿼드만 삼각형 2개 → 바다는 구멍(해안선).
+      const idx: number[] = [];
+      for (let y = 0; y < ny - 1; y++) {
+        for (let x = 0; x < nx - 1; x++) {
+          const a = y * nx + x;
+          const b = a + 1;
+          const c = a + nx;
+          const d = c + 1;
+          if (heights[a] < SEA_LEVEL_M || heights[b] < SEA_LEVEL_M || heights[c] < SEA_LEVEL_M || heights[d] < SEA_LEVEL_M) continue;
+          idx.push(a, c, b, b, c, d);
+        }
+      }
+      if (idx.length === 0) {
+        // 전부 바다(초기 프레임 등) → 메시 없음. 다음 데이터에서 재시도.
+        disposeTerrain();
+        lastGrid = grid;
+        return;
+      }
+      disposeTerrain();
+      terrainGeom = new THREE.BufferGeometry();
+      terrainGeom.setAttribute("position", new THREE.BufferAttribute(new Float32Array(V * 3), 3));
+      const colAttr = new Float32Array(V * 3);
+      for (let i = 0; i < V; i++) {
+        colAttr[i * 3] = colors[i * 3] / 255;
+        colAttr[i * 3 + 1] = colors[i * 3 + 1] / 255;
+        colAttr[i * 3 + 2] = colors[i * 3 + 2] / 255;
+      }
+      terrainGeom.setAttribute("color", new THREE.BufferAttribute(colAttr, 3));
+      terrainGeom.setIndex(idx);
+      const mat = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.08, roughness: 0.92, side: THREE.DoubleSide });
+      terrainMesh = new THREE.Mesh(terrainGeom, mat);
+      terrainMesh.frustumCulled = false;
+      gridScene.add(terrainMesh);
     }
-    mesh.instanceMatrix.needsUpdate = true;
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-    gridScene.add(mesh);
-    gridMesh = mesh;
+
+    // 정점 월드위치 = o + eHat·E + nHat·N + uHat·Up. 전체 재빌드/카메라 이동 모두 여기서 갱신.
+    const pos = (terrainGeom!.getAttribute("position") as THREE.BufferAttribute).array as Float32Array;
+    const ox = o.x, oy = o.y, oz = o.z;
+    const ex = eHat.x, ey = eHat.y, ez = eHat.z;
+    const nX = nHat.x, nY = nHat.y, nZ = nHat.z;
+    const ux = uHat.x, uy = uHat.y, uz = uHat.z;
+    for (let i = 0; i < V; i++) {
+      const E = baseE![i];
+      const Nn = baseN![i];
+      const Up = baseUp![i];
+      pos[i * 3] = ox + ex * E + nX * Nn + ux * Up;
+      pos[i * 3 + 1] = oy + ey * E + nY * Nn + uy * Up;
+      pos[i * 3 + 2] = oz + ez * E + nZ * Nn + uz * Up;
+    }
+    (terrainGeom!.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
+    if (fullRebuild) terrainGeom!.computeVertexNormals(); // 법선은 데이터 변경 때만(이동 중엔 유지 — 미세 지연 허용)
+    lastGrid = grid;
   }
 
   function buildSatellite(): THREE.Group {
@@ -508,9 +551,9 @@ export function createOrbitalLayer(
         if (m.geometry) m.geometry.dispose();
         if (m.material) (Array.isArray(m.material) ? m.material : [m.material]).forEach((mm) => mm.dispose());
       });
-      if (gridMesh) {
-        gridMesh.geometry.dispose();
-        (gridMesh.material as THREE.Material).dispose();
+      if (terrainMesh) {
+        terrainMesh.geometry.dispose();
+        (terrainMesh.material as THREE.Material).dispose();
       }
       renderer?.dispose();
     },
@@ -589,13 +632,13 @@ export function createOrbitalLayer(
         renderer.render(cubeScene, camera);
       }
 
-      // ── 한반도 큐브 그리드 (큐브샛 관측) — Korea 중심 앵커에 렌더 ──────────────
+      // ── 한반도 지형 메시 (큐브샛 관측) — Korea 중심 앵커에 렌더 ────────────────
       const grid = getKoreaGrid();
       if (grid !== lastGrid || (grid && wasDirty)) {
-        rebuildGrid(transform, grid); // 프레임(zoom morph)·데이터 변경 시 재빌드
-        lastGrid = grid;
+        // 데이터 변경 → 전체 재빌드(지오메트리·색·법선) / 카메라 이동 → 정점 위치만 갱신.
+        rebuildTerrain(transform, grid);
       }
-      if (gridMesh) {
+      if (terrainMesh) {
         const gm = transform.getMatrixForModel!(KOREA_CENTER, 0);
         modelM.fromArray(gm);
         camera.projectionMatrix.copy(mainMatrix).multiply(modelM);

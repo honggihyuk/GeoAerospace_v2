@@ -1,13 +1,13 @@
 "use client";
 
-// 우상단 큐브 표면 레이어 선택 — 큐브샛 관측 활성 시에만 표시.
-// 정사영상(VWorld) / Copernicus DEM / SAR 를 구분해 전환한다.
+// 우상단 지형 표면 레이어 선택 — 큐브샛 관측 활성 시에만 표시.
+// 정사영상(VWorld) / 실측 고도(Terrarium) / SAR 를 구분해 전환한다.
 import type { CSSProperties } from "react";
 import { useStore, type CubeSurface } from "@/lib/store";
 
 const OPTIONS: { key: CubeSurface; label: string; hint: string }[] = [
-  { key: "ortho", label: "정사영상", hint: "VWorld 항공영상" },
-  { key: "dem", label: "고도 음영", hint: "지형고도 30m (Terrarium)" },
+  { key: "ortho", label: "정사영상", hint: "VWorld 항공영상 305m/px" },
+  { key: "dem", label: "고도 음영", hint: "Terrarium 실측고도 305m" },
   { key: "sar", label: "SAR", hint: "Sentinel-1 후방산란" },
 ];
 
@@ -19,7 +19,7 @@ export default function CubeLayerPanel() {
 
   return (
     <div className="glass" style={PANEL}>
-      <div style={{ fontSize: 10.5, letterSpacing: "0.14em", color: "var(--faint)", marginBottom: 8 }}>큐브 표면 · 한반도 관측</div>
+      <div style={{ fontSize: 10.5, letterSpacing: "0.14em", color: "var(--faint)", marginBottom: 8 }}>지형 표면 · 한반도 관측</div>
       {OPTIONS.map((o) => {
         const on = surface === o.key;
         return (

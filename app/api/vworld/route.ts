@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 // 키 발급(무료): vworld.kr 가입 → 인증키 발급(활용 도메인에 localhost 등록) →
 //   .env.local 에 VWORLD_KEY=..., (필요 시) VWORLD_DOMAIN=http://localhost:3000
 
-const Z = 8; // 줌: 한반도 ~20 타일, 610 m/px (8 km 셀에 충분)
+const Z = 9; // 줌: 한반도 ~42 타일(≤80 캡), 305 m/px — 지형 메시 정점 드레이프에 맞춰 상향(구 Z=8=610 m/px)
 const wmtsUrl = (key: string, y: number, x: number) => `https://api.vworld.kr/req/wmts/1.0.0/${key}/Satellite/${Z}/${y}/${x}.jpeg`;
 
 const lngToPx = (lng: number) => ((lng + 180) / 360) * Math.pow(2, Z) * 256;
