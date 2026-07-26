@@ -68,7 +68,7 @@ export default function TopBar() {
               setCmd("");
             }
           }}
-          placeholder="위성·항공·궤도를 자연어로 명령…  예) ISS를 추적해줘"
+          placeholder="지도·위성·지역 관측을 자연어로 명령…  예) 인천 상황 브리핑해줘"
         />
         <kbd style={S.kbd}>⌘K</kbd>
       </label>
