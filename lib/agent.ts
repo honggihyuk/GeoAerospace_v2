@@ -723,6 +723,76 @@ function replyFor(tc: ToolCall, done: string | null): string {
   return "완료했습니다.";
 }
 
+/**
+ * 도구 연쇄 실행 → {성공여부, 콘텐츠, 실행도구}. 정규식·LLM 경로 공용(DRY).
+ * 수치가 많은 도구는 Qwen이 **서술만** 덧붙인다(계산 금지). 원본 수치 블록은 그대로 남겨
+ * 서술이 어긋나도 검증 가능하게 한다(설계원칙: 결정론 수치가 진실). ⚠️경고가 붙은 결과는 서술 안 함.
+ */
+async function runToolChain(forced: ToolCall[]): Promise<{ ok: boolean; content: string; tools: string[] }> {
+  const tools: string[] = [];
+  const replies: string[] = [];
+  for (const tc of forced) {
+    const done = await execTool(tc);
+    if (done) tools.push(done);
+    replies.push(replyFor(tc, done));
+  }
+  let content = replies.join(" ");
+  if (forced.some((t) => NARRATE_TOOLS.has(t.name)) && content.trim() && !content.includes("⚠️")) {
+    const narration = await narrate(content);
+    if (narration) content = `${narration}\n\n${content}`;
+  }
+  return { ok: tools.length > 0, content, tools };
+}
+
+// 실행기(execTool)가 아는 도구만 통과 — LLM이 스키마 밖 이름/좌표도구(fly_to)를 내면 버린다.
+const KNOWN_TOOLS = new Set([
+  "fly_to_place", "select_satellite", "filter_fires", "add_layer", "analyze_image", "toggle_layer",
+  "search_scenes", "describe_region", "spectral_index", "change_detection", "compare_index", "scan_region_change",
+]);
+
+// 지도/분석 액션 신호가 있을 때만 LLM 툴콜링을 시도(순수 지식질문의 불필요한 왕복 방지).
+// 도메인 명사만으로는 애매("궤도가 뭐야")하므로 이동/표시/조회 등 **액션 동사·의도어** 위주로 좁힌다.
+const ACTIONABLE_RE =
+  /이동|가줘|가자|날아|보여|표시|켜|꺼|끄|추적|선택|찾|검색|목록|조회|분석|해석|스캔|비교|필터|산불|화재|장면|대기질|미세먼지|상황|현황|브리핑|모니터|상공|\d{4}-\d{2}-\d{2}/;
+
+/**
+ * 환각 인자 차단 — 소형 모델(qwen3:8b)은 12개 도구에서 지명을 지어낸다(실측: "제주도로 이동"→서울,
+ * "부산 상황"→Korea). place/query/region 값이 **메시지에 실제로 근거**할 때만 통과시켜, 잘못된 지도
+ * 액션을 막는다. 근거 없으면 그 도구콜을 버리고(→ 아무것도 실행 안 되면 RAG로 폴백).
+ */
+function groundedArg(msg: string, tc: ToolCall): boolean {
+  const raw = tc.args.place ?? tc.args.query ?? tc.args.region;
+  if (typeof raw !== "string" || raw.trim().length < 2) return true; // 지명형 인자 없는 도구(toggle_layer 등)는 통과
+  const v = raw.toLowerCase().trim();
+  const m = msg.toLowerCase();
+  if (m.includes(v)) return true; // 메시지에 그대로 등장
+  if (/^\d{4,6}$/.test(v)) return m.includes(v); // NORAD 번호는 정확히 등장해야
+  const city = findCity(msg); // 알려진 도시(한↔영 매핑) — "서울"↔"Seoul" 같은 정당한 변환 허용
+  return city ? city.toLowerCase() === v : false;
+}
+
+/** 정규식이 못 잡은 질의를 Qwen3 툴콜링(/api/agent)으로 해석 — 조합형·변형 표현 대응. 실패 시 null. */
+async function tryLlmTools(msg: string): Promise<ToolCall[] | null> {
+  try {
+    const st = useStore.getState();
+    // ctx는 현재 서버 systemPrompt가 사용하지 않지만, 안전한 최소값을 넘긴다.
+    const ctx = { selected: String(st.selectedNorad ?? "none"), aircraft: 0, satellites: st.sats.slice(0, 24).map((s) => s.name), layers: st.layers };
+    const r = await fetch("/api/agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: msg, context: ctx }),
+    });
+    const j = (await r.json()) as { toolCalls?: { name?: string; args?: Record<string, unknown> }[] };
+    const calls = (j.toolCalls ?? [])
+      .filter((c): c is { name: string; args?: Record<string, unknown> } => !!c && typeof c.name === "string" && KNOWN_TOOLS.has(c.name))
+      .map((c) => ({ name: c.name, args: c.args ?? {} }))
+      .filter((c) => groundedArg(msg, c)); // 환각 인자(지어낸 지명) 차단
+    return calls.length ? calls : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function runAgent(text: string) {
   const s0 = useStore.getState();
   const msg = text.trim();
@@ -731,36 +801,28 @@ export async function runAgent(text: string) {
   s0.pushChat({ role: "user", content: msg });
   s0.setBusy(true);
   try {
-    // 지도 명령 → 결정론적 실행 (빠름)
+    // 1) 정규식 그라운딩 (빠른 공통경로) — 매칭되면 결정론적 실행(실패해도 안내 메시지 표시).
     const forced = resolveIntent(msg);
     if (forced) {
-      // 도구 연쇄 — FIRMS 포인트 위에 GIBS 맥락영상을 얹는 식(제안서 §4.7)
-      const tools: string[] = [];
-      const replies: string[] = [];
-      for (const tc of forced) {
-        const done = await execTool(tc);
-        if (done) tools.push(done);
-        replies.push(replyFor(tc, done));
-      }
-      let content = replies.join(" ");
-      // 수치가 많은 도구는 Qwen이 **서술만** 덧붙인다(계산 금지).
-      //   실측: temp 0.1 + num_ctx 고정 + "수치 변경 금지" 프롬프트로 5회 반복에서 지어낸 수치 0건.
-      //   그래도 라벨-수치 짝을 틀릴 여지는 있으므로 **원본 수치 블록을 아래에 그대로 남긴다**
-      //   → 서술이 어긋나도 사용자가 원본으로 검증 가능(설계원칙: 결정론 수치가 진실).
-      //   ⚠️ 품질 경고(유효 픽셀 부족 등)가 붙은 결과는 **서술하지 않는다** — 신뢰할 수 없는 수치를
-      //      매끄러운 문장으로 감싸면 경고를 읽지 않은 사용자가 사실로 받아들인다(실측에서 확인).
-      if (forced.some((t) => NARRATE_TOOLS.has(t.name)) && content.trim() && !content.includes("⚠️")) {
-        const narration = await narrate(content);
-        if (narration) content = `${narration}\n\n${content}`;
-      }
-      useStore.getState().pushChat({
-        role: "assistant",
-        content,
-        tools: tools.length ? tools : undefined,
-      });
+      const res = await runToolChain(forced);
+      useStore.getState().pushChat({ role: "assistant", content: res.content, tools: res.tools.length ? res.tools : undefined });
       return;
     }
-    // 그 외 → 지식 질문 RAG (bge-m3 + Qwen3, §4.3)
+
+    // 2) 정규식 미스 + 액션 신호 → Qwen3 툴콜링(하이브리드, 조합형·변형 대응).
+    //    도구가 하나라도 실제 실행되면 채택하고, 전부 실패하면 지식질문으로 보고 RAG로 폴백.
+    if (ACTIONABLE_RE.test(msg)) {
+      const calls = await tryLlmTools(msg);
+      if (calls) {
+        const res = await runToolChain(calls);
+        if (res.ok) {
+          useStore.getState().pushChat({ role: "assistant", content: res.content, tools: res.tools });
+          return;
+        }
+      }
+    }
+
+    // 3) 그 외 → 지식 질문 RAG (bge-m3 + Qwen3, §4.3)
     const r = await fetch("/api/rag", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

@@ -131,6 +131,74 @@ export const TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "spectral_index",
+      description:
+        "Sentinel-2 분광지수의 면적·비율을 계산한다. '식생/녹지/산림 면적'(ndvi), '수체/수면/호수 면적'(ndwi), '연소/산불 피해 면적'(nbr)처럼 한 지역의 지수 통계를 물을 때. 좌표·bbox는 시스템이 지오코딩으로 만든다(지명만 넘긴다).",
+      parameters: {
+        type: "object",
+        properties: {
+          index: { type: "string", enum: ["ndvi", "ndwi", "nbr"], description: "ndvi=식생, ndwi=수분/수체, nbr=연소" },
+          place: { type: "string", description: "지역명 (예: 센트럴파크, 부산, 소양호)" },
+        },
+        required: ["index", "place"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "change_detection",
+      description:
+        "두 시점(YYYY-MM-DD) 사이의 변화·산불 피해(dNBR)를 탐지한다. '전후 변화', 'OO 산불 피해 면적', '연소 심각도'처럼 두 날짜가 주어진 변화 질의에 사용. 두 날짜가 반드시 필요.",
+      parameters: {
+        type: "object",
+        properties: {
+          place: { type: "string", description: "지역명" },
+          from: { type: "string", description: "이전 시점 YYYY-MM-DD" },
+          to: { type: "string", description: "이후 시점 YYYY-MM-DD" },
+        },
+        required: ["place", "from", "to"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "compare_index",
+      description:
+        "특정 지수(ndvi/ndwi)의 두 시점 면적 증감을 비교한다. '수면이 얼마나 늘었나', '식생이 얼마나 줄었나'처럼 지수를 짚고 두 날짜로 증감을 물을 때. (연소/산불 피해는 change_detection을 쓴다.)",
+      parameters: {
+        type: "object",
+        properties: {
+          index: { type: "string", enum: ["ndvi", "ndwi"], description: "ndvi=식생, ndwi=수분/수체" },
+          place: { type: "string", description: "지역명" },
+          from: { type: "string", description: "이전 시점 YYYY-MM-DD" },
+          to: { type: "string", description: "이후 시점 YYYY-MM-DD" },
+        },
+        required: ["index", "place", "from", "to"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "scan_region_change",
+      description:
+        "Clay 임베딩으로 넓은 지역의 장기(연 단위) 토지변화를 광역 스캔한다. '광역/전역 변화 스캔', '도시화 추이', '장기 토지변화'처럼 연도 2개(YYYY)로 넓은 지역 변화를 물을 때. 픽셀 정밀 변화가 아니라 상대적 변화 핫스팟.",
+      parameters: {
+        type: "object",
+        properties: {
+          place: { type: "string", description: "지역명 (넓은 지역)" },
+          fromY: { type: "number", description: "시작 연도 (예: 2018)" },
+          toY: { type: "number", description: "종료 연도 (예: 2024)" },
+        },
+        required: ["place", "fromY", "toY"],
+      },
+    },
+  },
 ];
 
 export function systemPrompt(ctx: { selected: string; aircraft: number; satellites: string[]; layers: Record<string, boolean> }): string {
@@ -146,7 +214,13 @@ export function systemPrompt(ctx: { selected: string; aircraft: number; satellit
     "6) 영상 내용 해석·설명 요청 → analyze_image (VLM). 수치 조회는 filter_fires 를 쓴다.",
     "7) 위성영상 '장면' 검색(어떤 장면 있나/S2·SAR 장면 찾아/구름 없는 영상 찾아) → search_scenes",
     "8) 지역 관측 브리핑(OO 지역 상황/현황, OO 대기질 어때, OO 관측 요약) → describe_region(place=지명)",
+    "9) 지수 면적·비율(식생/녹지=ndvi, 수체/수면=ndwi, 연소/산불피해=nbr) → spectral_index(index, place)",
+    "10) 두 날짜(YYYY-MM-DD) 사이 변화·산불피해(dNBR) → change_detection(place, from, to)",
+    "11) 특정 지수(ndvi/ndwi)의 두 시점 면적 증감 → compare_index(index, place, from, to)",
+    "12) 넓은 지역의 연 단위 장기 토지변화 광역 스캔(연도 2개) → scan_region_change(place, fromY, toY)",
     "'서울','도쿄','파리' 같은 도시는 위성이 아니라 '장소'다 → 반드시 fly_to_place 를 쓴다.",
+    "여러 요청이 겹치면 도구를 순서대로 여러 개 호출해도 된다(예: 이동 + 산불 표시).",
+    "개념·용어의 뜻이나 원리를 묻는 순수 지식 질문(예: 'TLE가 뭐야', '태양동기궤도 원리')은 도구를 호출하지 말 것 — 도구 없이 둔다.",
     "요청에 없는 도구는 호출하지 않는다. 답변은 한국어 한 문장.",
   ].join("\n");
 }
