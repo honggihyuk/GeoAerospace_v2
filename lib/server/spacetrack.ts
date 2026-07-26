@@ -122,18 +122,33 @@ function parse3le(text: string): StElset[] {
   return out;
 }
 
+// Space-Track 권고 임계 — NORAD_CAT_ID 필터는 이 개수까지만. 넘으면 벌크 URL로 한 번에.
+const GP_ID_LIMIT = 100;
+
 /**
- * 여러 위성의 **최신** 원소를 한 번의 배치 쿼리로 가져온다(정책: gp, gp_history 아님).
- * decay_date/null-val = 소멸체 제외로 응답 축소(권고). NORAD 워치리스트라 한 배치로 충분.
- * 레이트리밋·붐비는구간·세션은 spacetrackFetch 관문이 강제한다 → 초과 시 throw, 호출측이 폴백.
+ * 여러 위성의 **최신** 원소를 **한 번의 gp 쿼리**로 가져온다(정책: gp, gp_history 아님; 절대 다중 쿼리 금지).
+ * - ID ≤ 100(우리 워치리스트=5): NORAD_CAT_ID 정밀 필터(대역폭 최소, 정확히 그 위성만).
+ * - ID > 100: Space-Track **권고 벌크 URL**(decay_date null-val + CREATION_DATE 최근 ~1h)로 한 번에 받아
+ *   클라에서 워치리스트로 필터 — 다중 gp 쿼리를 내지 않기 위함(대역폭 절약·서버 부하 감소).
+ * 레이트리밋(시간당 1회)·붐비는구간·세션은 spacetrackFetch 관문이 강제한다 → 초과 시 throw, 호출측이 폴백.
  */
 export async function fetchLatestElsets(noradIds: number[]): Promise<StElset[]> {
   if (!isConfigured() || noradIds.length === 0) return [];
-  const ids = [...new Set(noradIds)].join(",");
-  const url =
-    `${BASE}/basicspacedata/query/class/gp` +
-    `/NORAD_CAT_ID/${ids}/decay_date/null-val` +
-    `/orderby/NORAD_CAT_ID/format/3le`;
+  const ids = [...new Set(noradIds)];
+
+  let url: string;
+  let want: Set<number> | null = null;
+  if (ids.length <= GP_ID_LIMIT) {
+    url =
+      `${BASE}/basicspacedata/query/class/gp` +
+      `/NORAD_CAT_ID/${ids.join(",")}/decay_date/null-val` +
+      `/orderby/NORAD_CAT_ID/format/3le`;
+  } else {
+    // 권고 URL: 최근 ~1h(0.042일)에 갱신된 비소멸 GP 전체를 한 쿼리로. 매시간 폴링해 누적하는 용도.
+    url = `${BASE}/basicspacedata/query/class/gp/decay_date/null-val/CREATION_DATE/%3Enow-0.042/format/3le`;
+    want = new Set(ids);
+  }
   const r = await spacetrackFetch(url, { kind: "gp", accept: "text/plain", timeoutMs: 25_000 });
-  return parse3le(await r.text());
+  const all = parse3le(await r.text());
+  return want ? all.filter((e) => want!.has(e.noradId)) : all;
 }
