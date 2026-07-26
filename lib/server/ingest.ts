@@ -2,6 +2,7 @@
 // /api/ingest/* 라우트와 /api/region/describe(온디맨드)가 공유한다.
 import { fetchFires, type FirePoint } from "./fetchFires";
 import { fetchOpenAQ, isOpenAqConfigured } from "./fetchOpenAQ";
+import { fetchIncidentsIts } from "./fetchIncidentIts";
 import { sampleElevations } from "./demSample";
 import { db } from "./db";
 
@@ -106,6 +107,55 @@ export async function ingestInsar(points: InsarPoint[], opts: { source?: string 
     client.release();
   }
   return { fetched: points.length, inserted };
+}
+
+// ITS 돌발 시각 "YYYYMMDDHHmmss"(14자리) → ISO. 형식 불명이면 null.
+function itsDateToIso(s: string | undefined): string | null {
+  const m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/.exec((s ?? "").trim());
+  return m ? `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z` : null;
+}
+
+/** ITS 실시간 돌발(사고·공사·통제…) → observations (kind='incident', value=중요돌발 1/0).
+ *  레인 ②에 교통을 first-class 관측으로 편입 — 이력·공간질의·그라운딩(요약카드/summarizeObservations)에 노출.
+ *  세부종류(사고/공사/통제…)는 props.subtype 에. 데모키는 bbox 무시(전국) → bbox로 직접 필터해 오적재 방지. */
+export async function ingestIncidents(bbox: [number, number, number, number]): Promise<IngestResult | null> {
+  let res: Awaited<ReturnType<typeof fetchIncidentsIts>>;
+  try {
+    res = await fetchIncidentsIts(bbox);
+  } catch {
+    return null; // ITS 실패 → 호출측이 건너뜀(치명적 아님)
+  }
+  const [w, s, e, n] = bbox;
+  const items = res.items.filter((it) => it.lon >= w && it.lon <= e && it.lat >= s && it.lat <= n);
+
+  const client = await db().connect();
+  let inserted = 0;
+  try {
+    await client.query("BEGIN");
+    for (const it of items) {
+      const observedAt = itsDateToIso(it.start);
+      const r = await client.query(
+        `INSERT INTO observations (source, kind, geom, value, unit, props, observed_at)
+         VALUES ('its', 'incident', ST_SetSRID(ST_MakePoint($1, $2), 4326), $3, NULL, $4::jsonb, $5)
+         ON CONFLICT (source, kind, observed_at, geom) DO NOTHING`,
+        [
+          it.lon,
+          it.lat,
+          it.important ? 1 : 0, // 중요돌발(사고·통제·폐쇄) 플래그를 value로 → 스칼라 질의/집계 용이
+          JSON.stringify({ subtype: it.kind, typeCd: it.typeCd, title: it.title, road: it.road, control: it.control, end: it.end, important: it.important }),
+          observedAt,
+        ]
+      );
+      inserted += r.rowCount ?? 0;
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+  return { fetched: items.length, inserted };
 }
 
 /** OpenAQ 최신 대기질 → observations. 키 미설정이면 null(호출측이 건너뜀). */

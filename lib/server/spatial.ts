@@ -60,6 +60,7 @@ export const KIND_LABEL: Record<string, string> = {
   pm25: "초미세먼지(PM2.5)",
   pm10: "미세먼지(PM10)",
   subsidence: "지반침하",
+  incident: "도로 돌발", // ITS/UTIC 실시간 돌발(사고·공사·통제…) — props.subtype 에 세부종류
 };
 
 /** 관측 배열 → VLM/LLM 그라운딩용 한 줄 요약 (종류별 개수·대표수치). */

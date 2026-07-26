@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { ingestFires, ingestOpenAQ } from "@/lib/server/ingest";
+import { ingestFires, ingestOpenAQ, ingestIncidents } from "@/lib/server/ingest";
 import { buildRegionCard } from "@/lib/server/regionCard";
 import { retrieve } from "@/lib/server/retrieve";
 import { embed } from "@/lib/server/embed";
@@ -47,7 +47,8 @@ export async function POST(req: Request) {
       reused = true;
     } else {
       // 관측 최신화(best-effort — 한쪽 실패가 브리핑을 막지 않게 격리) → 카드 생성 + 임베딩 upsert.
-      await Promise.allSettled([ingestFires(bbox, 3), ingestOpenAQ(bbox, 15)]);
+      // 돌발(ITS)도 여기서 observations 에 영속화 → 이력·공간질의·RAG 그라운딩 기반 확보(레인 ② 편입).
+      await Promise.allSettled([ingestFires(bbox, 3), ingestOpenAQ(bbox, 15), ingestIncidents(bbox)]);
       const card = await buildRegionCard(place, bbox);
       cardBody = card.body;
       counts = card.kinds;
@@ -65,14 +66,15 @@ export async function POST(req: Request) {
     }
 
     // 3) 관련 개념 doc 검색(카드 자신은 제외) → 그라운딩 보강.
-    const question = (body.question ?? `${place} 지역 관측 상황`).trim();
+    const question = (body.question ?? `${place} 지역 관측·지형·교통 상황`).trim();
     const concepts = (await retrieve(question, 4)).filter((r) => !r.chunk.id.startsWith("card:")).slice(0, 2);
     const conceptCtx = concepts.map((c) => `- ${c.chunk.title}: ${c.chunk.text}`).join("\n");
 
     // 4) LLM 종합 — 카드(실측 관측)를 우선 근거로, 수치를 지어내지 말 것.
     const sys =
-      "너는 지역 관측 브리핑 어시스턴트다. 아래 [관측카드]의 실측 수치를 근거로 한국어 3~4문장으로 요약하라. " +
-      "카드에 없는 수치는 지어내지 말고, [개념]은 용어 해석에만 참고하라. 사고 과정은 출력하지 마라.";
+      "너는 지역 상황 브리핑 어시스턴트다. 아래 [관측카드]의 실측 수치(관측·지형·SAR·도로교통·침수취약도)를 근거로 한국어 3~5문장으로 요약하라. " +
+      "지형(표고·기복·경사·저지대)·SAR(저후방산란)·도로교통(돌발·소통)·침수취약도가 카드에 있으면 반드시 포함하고, 교차 해석하라(예: 저지대+SAR 저후방산란=침수 가능, 산악 구간과 통제/혼잡). " +
+      "SAR 저후방산란·침수취약도는 '추정'이며 확정이 아님을 밝혀라. 카드에 없는 수치는 지어내지 말고, [개념]은 용어 해석에만 참고하라. 사고 과정은 출력하지 마라.";
     // 관측카드(실측)를 개념보다 우선 보존 — 카드가 잘리면 브리핑이 근거를 잃는다.
     const user =
       `[관측카드]\n${fitToBudget(cardBody, 10_000, "관측카드")}\n\n` +
