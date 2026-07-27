@@ -4,10 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import maplibregl, { type StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { MapboxOverlay } from "@deck.gl/mapbox";
-import { ScatterplotLayer, IconLayer } from "@deck.gl/layers";
+import { ScatterplotLayer } from "@deck.gl/layers";
 import { computeOrbit, currentPosition, type OrbitData } from "@/lib/orbit";
 import { useStore } from "@/lib/store";
-import { loadAircraft, deadReckon, makePlaneIcon, AC_COLOR, type AircraftSnapshot } from "@/lib/aircraft";
+import { loadAircraft, deadReckon, destination, makePlaneImageData, type AircraftSnapshot } from "@/lib/aircraft";
 import { createOrbitalLayer, type SatView, type OrbitRing, type SatHit } from "@/lib/three/orbitalLayer";
 import { KOREA_BBOX, KOREA_CENTER, GRID_NX, GRID_NY, cellLngLat, elevationColor, type KoreaGrid } from "@/lib/koreaCube";
 import { mapBus } from "@/lib/mapBus";
@@ -86,7 +86,6 @@ export default function MapCanvas() {
   const orbitsRef = useRef<OrbitData[]>([]); // 시뮬 시각 기준으로 주기 재계산되는 궤도(링/지상궤적/satrec)
   const koreaGridRef = useRef<KoreaGrid | null>(null); // 큐브샛 더블클릭 관측 → 한반도 큐브 그리드
   const satHitsRef = useRef<SatHit[]>([]); // orbitalLayer가 매 프레임 채우는 위성 화면좌표(클릭 피킹용)
-  const iconRef = useRef<{ url: string; width: number; height: number; anchorX: number; anchorY: number; mask: boolean } | null>(null);
   const select = useStore((s) => s.select);
   const [pickedFire, setPickedFire] = useState<FirePoint | null>(null);
   const [pickedCctv, setPickedCctv] = useState<CctvPoint | null>(null);
@@ -101,12 +100,6 @@ export default function MapCanvas() {
 
   // 실시간 TLE 로딩은 뷰와 무관해야 하므로 app/page.tsx의 useLiveTles()가 담당한다.
   // (여기 있던 시절엔 3D 전환 시 언마운트되며 setSats가 취소돼 영구 LOADING… 이었다.)
-
-  // 항공·CCTV 아이콘 생성 (1회, 클라이언트)
-  useEffect(() => {
-    const url = makePlaneIcon(64);
-    if (url) iconRef.current = { url, width: 64, height: 64, anchorX: 32, anchorY: 32, mask: true };
-  }, []);
 
   // CCTV 팝업 드래그 (헤더를 잡고 이동)
   useEffect(() => {
@@ -891,7 +884,104 @@ export default function MapCanvas() {
     };
   }, [regionChange]);
 
-  // 렌더 루프: 위성 전파 + 항공 dead-reckoning (30fps 게이트)
+  // 항공기 — maplibre 네이티브 symbol 레이어(CCTV/돌발과 동일 방식). deck.gl IconLayer는
+  // globe projection에서 렌더 불가(버그 #9554)라 여기로 이관. SDF 아이콘 → icon-color(카테고리)·
+  // icon-rotate(헤딩). 위치는 acRef(12초 폴링)+deadReckon 보간을 1초마다 setData. gs>3 은 속도벡터 리더선.
+  const acOn = useStore((s) => s.layers.aircraft);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const SRC = "aircraft-src";
+    const ICON = "aircraft-icon";
+    const LEAD = "aircraft-leader";
+    const EMPTY: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
+
+    let timer = 0;
+    let alive = true;
+
+    // ⚠️ 이 globe 앱은 베이스맵·지형 타일이 계속 스트리밍돼 `isStyleLoaded()`가 사실상 영영 false다
+    //   (spectral 효과 주석 참고). 그래서 isStyleLoaded로 가드하지 않고 **시도→실패 시 다음 초 재시도**한다.
+    //   addSource/addLayer 는 스타일 스펙만 로드되면 되고, 준비 전이면 throw → catch 후 재시도.
+    const ensure = (): boolean => {
+      try {
+        if (!map.hasImage("ac-plane")) {
+          const img = makePlaneImageData(64);
+          if (img) map.addImage("ac-plane", img, { sdf: true }); // sdf → icon-color 로 틴트 가능
+        }
+        if (!map.getSource(SRC)) map.addSource(SRC, { type: "geojson", data: EMPTY });
+        // 속도벡터 리더선(LineString) — 아이콘 아래.
+        if (!map.getLayer(LEAD))
+          map.addLayer({
+            id: LEAD,
+            type: "line",
+            source: SRC,
+            filter: ["==", ["geometry-type"], "LineString"],
+            paint: { "line-color": ["match", ["get", "cat"], "mil", "#ff8a00", "#ffd100"], "line-width": 1.3, "line-opacity": 0.5 },
+          });
+        // 항공기 아이콘(Point) — 헤딩 회전 + 카테고리 색.
+        if (!map.getLayer(ICON))
+          map.addLayer({
+            id: ICON,
+            type: "symbol",
+            source: SRC,
+            filter: ["==", ["geometry-type"], "Point"],
+            layout: {
+              "icon-image": "ac-plane",
+              "icon-size": ["interpolate", ["linear"], ["zoom"], 3, 0.32, 7, 0.52, 11, 0.72],
+              "icon-rotate": ["get", "track"], // track=북기준 시계방향 = icon-rotate 규약과 동일
+              "icon-rotation-alignment": "map",
+              "icon-allow-overlap": true,
+              "icon-ignore-placement": true,
+            },
+            paint: { "icon-color": ["match", ["get", "cat"], "mil", "#ff8a00", "#ffd100"], "icon-opacity": 0.95 },
+          });
+        return !!map.getSource(SRC);
+      } catch {
+        return false; // 스타일 스펙 미준비 → 다음 1초 재시도
+      }
+    };
+
+    const build = () => {
+      if (!ensure()) return;
+      const src = map.getSource(SRC) as maplibregl.GeoJSONSource | undefined;
+      if (!src) return;
+      const data = deadReckon(acRef.current, Date.now());
+      const features: GeoJSON.Feature[] = [];
+      for (const a of data) {
+        features.push({ type: "Feature", geometry: { type: "Point", coordinates: [a.lon, a.lat] }, properties: { track: a.track, cat: a.category } });
+        if (a.gs > 3) {
+          const [lon, lat] = destination(a.lon, a.lat, (a.gs * 0.514444 * 60) / 1000, a.track);
+          features.push({ type: "Feature", geometry: { type: "LineString", coordinates: [[a.lon, a.lat], [lon, lat]] }, properties: { cat: a.category } });
+        }
+      }
+      src.setData({ type: "FeatureCollection", features });
+    };
+
+    // 레이어 OFF → 루프 없이 종료(레이어/소스는 이 effect 재실행 시 아래 cleanup이 이미 제거).
+    if (!acOn) return;
+
+    // 1초마다 deadReckon 보간 갱신(30fps setData는 과부하). 폴링은 별도 effect가 acRef를 12초마다 채운다.
+    // 시작 즉시 loop — ensure()가 스타일 준비 전이면 실패하고 다음 초 재시도(globe에서 isStyleLoaded 신뢰불가).
+    const loop = () => {
+      if (!alive) return;
+      build();
+      timer = window.setTimeout(loop, 1000);
+    };
+    loop();
+
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+      try {
+        for (const id of [ICON, LEAD]) if (map.getLayer(id)) map.removeLayer(id);
+        if (map.getSource(SRC)) map.removeSource(SRC);
+      } catch {
+        /* 스타일 소거됨 */
+      }
+    };
+  }, [acOn]);
+
+  // 렌더 루프: 위성 전파 (30fps 게이트) — 항공기는 위 maplibre 네이티브 레이어로 이관됨
   useEffect(() => {
     const overlay = overlayRef.current;
     if (!overlay) return;
@@ -935,24 +1025,11 @@ export default function MapCanvas() {
       // Three.js 레이어용 위성 뷰 갱신 (§4.6-A)
       satViewRef.current = satData.map((s) => ({ norad: s.norad, lng: s.pos[0], lat: s.pos[1], alt: s.pos[2], color: s.color, sel: s.sel }));
 
-      const acData = st.layers.aircraft && iconRef.current ? deadReckon(acRef.current, Date.now()) : [];
-
+      // 항공기는 deck.gl IconLayer가 globe projection에서 렌더 불가(버그 #9554)라
+      // maplibre 네이티브 symbol 레이어로 이관(아래 별도 useEffect). 여기선 deck 레이어에서 제외.
       overlay.setProps({
         layers: [
-          // 지상궤적 레이어 제거됨(요청). 궤도링·위성은 Three.js custom layer(orbital-3d) 담당.
-          st.layers.aircraft &&
-            iconRef.current &&
-            new IconLayer({
-              id: "aircraft",
-              data: acData,
-              getPosition: (d: { lon: number; lat: number; alt: number }) => [d.lon, d.lat, d.alt * 0.3048],
-              getIcon: () => iconRef.current!,
-              getSize: 15,
-              sizeUnits: "pixels",
-              getAngle: (d: { track: number }) => -d.track,
-              getColor: (d: { category: keyof typeof AC_COLOR }) => [...AC_COLOR[d.category], 235] as [number, number, number, number],
-              parameters: { depthTest: false },
-            }),
+          // 지상궤적·위성·항공기는 deck.gl에서 제외 — globe 미지원(위성=Three.js, 항공기=maplibre symbol).
           st.layers.fires &&
             new ScatterplotLayer({
               id: "fires",

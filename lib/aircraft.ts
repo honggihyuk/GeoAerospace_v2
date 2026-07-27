@@ -25,8 +25,8 @@ export async function loadAircraft(): Promise<AircraftSnapshot> {
 
 const R_EARTH = 6371; // km
 
-/** 대권 전진: (lon,lat)에서 bearing 방향으로 distKm 이동한 지점. */
-function destination(lon: number, lat: number, distKm: number, bearingDeg: number): [number, number] {
+/** 대권 전진: (lon,lat)에서 bearing 방향으로 distKm 이동한 지점. (deadReckon + 속도 벡터 리더선 공용) */
+export function destination(lon: number, lat: number, distKm: number, bearingDeg: number): [number, number] {
   const d = distKm / R_EARTH;
   const br = (bearingDeg * Math.PI) / 180;
   const la1 = (lat * Math.PI) / 180;
@@ -49,17 +49,11 @@ export function deadReckon(snap: AircraftSnapshot, now = Date.now()) {
   });
 }
 
-/** 위쪽(북)을 향한 비행기 실루엣 아이콘 데이터 URL. IconLayer mask 틴트용. */
-export function makePlaneIcon(size = 64): string {
-  const c = document.createElement("canvas");
-  c.width = c.height = size;
-  const ctx = c.getContext("2d");
-  if (!ctx) return "";
-  const s = size;
+// 위(북)를 향한 항공기 실루엣을 흰색으로 그린다(중심 원점). SDF/mask 틴트로 색을 입힌다.
+function drawPlane(ctx: CanvasRenderingContext2D, s: number) {
   ctx.fillStyle = "#ffffff";
   ctx.translate(s / 2, s / 2);
   ctx.beginPath();
-  // 위를 향한 항공기 실루엣
   ctx.moveTo(0, -s * 0.42); // nose
   ctx.lineTo(s * 0.09, s * 0.05);
   ctx.lineTo(s * 0.42, s * 0.22); // right wing
@@ -78,12 +72,37 @@ export function makePlaneIcon(size = 64): string {
   ctx.lineTo(-s * 0.09, s * 0.05);
   ctx.closePath();
   ctx.fill();
+}
+
+/** 위쪽(북)을 향한 비행기 실루엣 아이콘 데이터 URL(deck.gl IconLayer용 — 레거시). */
+export function makePlaneIcon(size = 64): string {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const ctx = c.getContext("2d");
+  if (!ctx) return "";
+  drawPlane(ctx, size);
   return c.toDataURL();
 }
 
+/**
+ * maplibre `addImage`용 항공기 실루엣 ImageData.
+ * globe에서 deck.gl IconLayer는 렌더 불가(버그 #9554)라, maplibre 네이티브 symbol 레이어로 그린다.
+ * SDF(sdf:true)로 등록하면 `icon-color`로 카테고리 색을, `icon-rotate`로 헤딩 회전을 준다.
+ */
+export function makePlaneImageData(size = 64): ImageData | null {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const ctx = c.getContext("2d");
+  if (!ctx) return null;
+  drawPlane(ctx, size);
+  return ctx.getImageData(0, 0, size, size);
+}
+
+// 항공 트래커 노란색 팔레트(AQup 스타일) — 흰 실루엣 아이콘을 mask 틴트로 물들인다.
+//   민항=채도 높은 노랑, 군용만 주황으로 구분.
 export const AC_COLOR: Record<Aircraft["category"], [number, number, number]> = {
-  commercial: [210, 230, 255],
-  private: [140, 180, 232],
-  jet: [92, 225, 255],
-  mil: [255, 183, 77],
+  commercial: [255, 209, 0],
+  private: [255, 179, 0],
+  jet: [255, 224, 79],
+  mil: [255, 138, 0],
 };
