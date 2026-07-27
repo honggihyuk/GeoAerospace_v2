@@ -1,6 +1,7 @@
 // 항공기 ADS-B 수집 (설계서 §4.2 · §4.8-D) — 다중 소스 폴백 + 지역 팬아웃
 // + single-flight + 캐시 + 429 쿨다운 + Promise.allSettled 회복탄력.
 import { safeFetch } from "./safeFetch";
+import { fetchOpenSkyKorea, isOpenSkyAuthed } from "./fetchOpenSky";
 
 export type Aircraft = {
   hex: string;
@@ -13,16 +14,18 @@ export type Aircraft = {
   category: "commercial" | "private" | "jet" | "mil";
 };
 
-// 주요 트래픽 허브 (지역 팬아웃, 반경 nm)
+// 글로벌 트래픽 허브 (adsb.lol 지역 팬아웃, 반경 nm). 한국은 OpenSky bbox 단일 쿼리가 담당(아래 fetchKorea).
 const REGIONS: [number, number, number][] = [
   [50.03, 8.56, 250], // Frankfurt
   [51.47, -0.45, 250], // London
   [40.64, -73.78, 250], // New York
   [33.94, -118.4, 250], // Los Angeles
-  [37.46, 126.44, 250], // Incheon
   [35.55, 139.78, 250], // Tokyo
   [25.25, 55.36, 250], // Dubai
 ];
+
+// 한국 인천 폴백(OpenSky 실패 시) — adsb.lol 지역 쿼리.
+const KOREA_FALLBACK: [number, number, number] = [37.46, 126.44, 250];
 
 type Raw = { hex?: string; flight?: string; r?: string; lat?: number; lon?: number; alt_baro?: number | string; gs?: number; track?: number; category?: string; t?: string };
 
@@ -100,13 +103,34 @@ export async function fetchAircraft(): Promise<{ data: Aircraft[]; source: strin
   if (inFlight) return inFlight;
 
   inFlight = (async () => {
-    const settled = await Promise.allSettled(REGIONS.map(([la, lo, nm]) => fetchRegion(la, lo, nm)));
+    // 한국: OpenSky bbox 단일 쿼리(균일·저요청). 실패 시 adsb.lol 인천 지역으로 폴백.
+    let koreaSrc = "";
+    const koreaP = (async (): Promise<Aircraft[]> => {
+      try {
+        const a = await fetchOpenSkyKorea();
+        koreaSrc = isOpenSkyAuthed() ? "OpenSky(KR)" : "OpenSky(KR·익명)";
+        return a;
+      } catch {
+        const a = await fetchRegion(...KOREA_FALLBACK);
+        if (a.length) koreaSrc = "adsb.lol(KR폴백)";
+        return a;
+      }
+    })();
+
+    // 글로벌 허브(adsb.lol) + 한국을 병렬로. [0]=한국, [1..]=글로벌.
+    const settled = await Promise.allSettled([koreaP, ...REGIONS.map(([la, lo, nm]) => fetchRegion(la, lo, nm))]);
     const merged = new Map<string, Aircraft>();
-    for (const s of settled) {
+    // 글로벌 허브 먼저 넣고, 한국(OpenSky)을 나중에 덮는다 → 겹치는 기체는 OpenSky 값 우선.
+    for (let i = 1; i < settled.length; i++) {
+      const s = settled[i];
       if (s.status === "fulfilled") for (const ac of s.value) if (ac.hex) merged.set(ac.hex, ac);
     }
+    const s0 = settled[0];
+    if (s0.status === "fulfilled") for (const ac of s0.value) if (ac.hex) merged.set(ac.hex, ac);
+
     const data = [...merged.values()];
-    const source = data.length ? "adsb.lol/airplanes.live" : "unavailable";
+    const globalOk = settled.slice(1).some((s) => s.status === "fulfilled" && s.value.length > 0);
+    const source = data.length ? [koreaSrc, globalOk ? "adsb.lol" : ""].filter(Boolean).join("+") || "adsb.lol" : "unavailable";
     cache = { data, source, ts: Date.now() };
     return { data, source };
   })();
